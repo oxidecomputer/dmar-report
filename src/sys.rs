@@ -1,5 +1,7 @@
 #![allow(dead_code, non_camel_case_types)]
 
+use libc::{c_char, c_int};
+
 pub const MC_ZEN_MAX_CHANS: u8 = 12;
 pub const MC_ZEN_MAX_SUBCHANS: u8 = 2;
 pub const MC_ZEN_MAX_DIMMS: u8 = 2;
@@ -106,4 +108,40 @@ impl Default for mc_get_data {
             mgd_size: mgd_size { size: 0 },
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(transparent)]
+pub struct spd_error_t(pub u32);
+impl spd_error_t {
+    pub const LIBJEDEC_SPD_OK: Self = Self(0);
+    pub const LIBJEDEC_SPD_NOMEM: Self = Self(1);
+    pub const LIBJEDEC_SPD_TOOSHORT: Self = Self(2);
+    pub const LIBJEDEC_SPD_UNSUP_TYPE: Self = Self(3);
+    pub const LIBJEDEC_SPD_UNSUP_REV: Self = Self(4);
+
+    pub const LIBJEDEC_SPD_ERR_MAX: Self = Self::LIBJEDEC_SPD_UNSUP_REV;
+}
+
+#[link(name = "jedec")]
+unsafe extern "C" {
+    pub fn libjedec_spd(_: *const u8, _: usize, _: *mut spd_error_t) -> *mut nvlist_t;
+}
+
+pub const SPD_KEY_MFG_MOD_MFG_NAME: *const c_char = c"mfg.module-mfg-name".as_ptr();
+pub const SPD_KEY_MFG_DRAM_MFG_NAME: *const c_char = c"mfg.dram-mfg-name".as_ptr();
+pub const SPD_KEY_MFG_MOD_PN: *const c_char = c"mfg.module-pn".as_ptr();
+pub const SPD_KEY_MFG_MOD_SN: *const c_char = c"mfg.module-sn".as_ptr();
+pub const SPD_KEY_DRAM_WIDTH: *const c_char = c"dram.width".as_ptr();
+
+pub const DATA_TYPE_UINT32: c_int = 6;
+pub const DATA_TYPE_STRING: c_int = 9;
+
+pub enum nvlist_t {}
+
+#[link(name = "nvpair")]
+unsafe extern "C" {
+    pub fn nvlist_free(_: *mut nvlist_t);
+    pub fn nvlist_lookup_pairs(_: *mut nvlist_t, _: c_int, ...) -> c_int;
+    pub fn nvlist_print(_: *mut (), _: *mut nvlist_t);
 }
