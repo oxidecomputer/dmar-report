@@ -9,20 +9,40 @@ use serde::Serialize;
 
 use crate::sys;
 
+// XXX: Don't hardcode this here
+const TURIN_CHAN_MAP: [char; 12] = ['C', 'E', 'F', 'A', 'B', 'D', 'I', 'K', 'L', 'G', 'H', 'J'];
+
 #[derive(Debug, Serialize)]
 pub struct Channel {
     pub chan: u8,
+    pub slot: char,
     pub dimms: Vec<Dimm>,
     phy: Option<ChannelPhyData>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct DimmInfo {
     module_mfg: String,
     dram_mfg: String,
     part_number: String,
     serial_number: String,
     dram_width: u32,
+    data_width: u32,
+    ecc_width: u32,
+}
+
+impl Default for DimmInfo {
+    fn default() -> Self {
+        Self {
+            module_mfg: "<Unknown>".into(),
+            dram_mfg: "<Unknown>".into(),
+            part_number: "<Unknown>".into(),
+            serial_number: "<Unknown>".into(),
+            dram_width: 0,
+            data_width: 0,
+            ecc_width: 0,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -30,26 +50,25 @@ pub struct Dimm {
     pub dimm: u8,
     #[serde(skip)]
     pub spd: Vec<u8>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    info: Option<DimmInfo>,
-    ranks: Vec<Rank>,
+    #[serde(skip)]
+    pub spd_json: Vec<u8>,
+    pub info: DimmInfo,
+    pub ranks: Vec<Rank>,
     phy: Option<DimmPhyData>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct Rank {
-    rank: u8,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    margin: Option<Margin>,
-    sub_chans: Vec<SubChannel>,
+    pub rank: u8,
+    pub margin: Option<Margin>,
+    pub sub_chans: Vec<SubChannel>,
     phy: Option<RankPhyData>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct SubChannel {
-    sub_chan: u8,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    margins: Vec<Margin>,
+    pub sub_chan: u8,
+    pub margins: Vec<Margin>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize)]
@@ -177,7 +196,7 @@ impl std::fmt::Display for DataScope {
     }
 }
 
-fn parse_spd(spd: &[u8]) -> anyhow::Result<DimmInfo> {
+fn parse_spd(spd: &[u8]) -> anyhow::Result<(DimmInfo, Vec<u8>)> {
     let mut err = sys::spd_error_t::LIBJEDEC_SPD_OK;
     let spd_nvl = unsafe { sys::libjedec_spd(spd.as_ptr(), spd.len(), &mut err) };
     match err {
@@ -200,11 +219,36 @@ fn parse_spd(spd: &[u8]) -> anyhow::Result<DimmInfo> {
     }
     let spd_nvl = NvList(spd_nvl);
 
+    let spd_json = {
+        let mut buf_ptr = std::ptr::null_mut();
+        let mut buf_sz = 0;
+        let buf = unsafe { libc::open_memstream(&raw mut buf_ptr, &raw mut buf_sz) };
+        if buf.is_null() {
+            return Err(Error::last_os_error()).context("Failed to get memstream to write SPD nvl");
+        }
+        unsafe {
+            sys::nvlist_print_json(buf, spd_nvl.0);
+        }
+        if unsafe { libc::fclose(buf) } != 0 {
+            return Err(Error::last_os_error()).context("Failed to close SPD nvl memstream");
+        }
+        if buf_ptr.is_null() || buf_sz == 0 {
+            anyhow::bail!("Failed to convert SPD");
+        }
+        let spd = Vec::from(unsafe { std::slice::from_raw_parts(buf_ptr.cast::<u8>(), buf_sz) });
+        unsafe {
+            libc::free(buf_ptr.cast());
+        }
+        spd
+    };
+
     let mut mmfg: *const libc::c_char = c"<Unknown>".as_ptr();
     let mut dmfg: *const libc::c_char = c"<Unknown>".as_ptr();
     let mut pn: *const libc::c_char = c"<Unknown>".as_ptr();
     let mut sn: *const libc::c_char = c"<Unknown>".as_ptr();
     let mut dram_width = 0u32;
+    let mut data_width = 0u32;
+    let mut ecc_width = 0u32;
 
     let ret = unsafe {
         sys::nvlist_lookup_pairs(
@@ -212,19 +256,25 @@ fn parse_spd(spd: &[u8]) -> anyhow::Result<DimmInfo> {
             0,
             sys::SPD_KEY_MFG_MOD_MFG_NAME,
             sys::DATA_TYPE_STRING,
-            &mut mmfg as *mut _,
+            &raw mut mmfg,
             sys::SPD_KEY_MFG_DRAM_MFG_NAME,
             sys::DATA_TYPE_STRING,
-            &mut dmfg as *mut _,
+            &raw mut dmfg,
             sys::SPD_KEY_MFG_MOD_PN,
             sys::DATA_TYPE_STRING,
-            &mut pn as *mut _,
+            &raw mut pn,
             sys::SPD_KEY_MFG_MOD_SN,
             sys::DATA_TYPE_STRING,
-            &mut sn as *mut _,
+            &raw mut sn,
             sys::SPD_KEY_DRAM_WIDTH,
             sys::DATA_TYPE_UINT32,
-            &mut dram_width as *mut _,
+            &raw mut dram_width,
+            sys::SPD_KEY_DATA_WIDTH,
+            sys::DATA_TYPE_UINT32,
+            &raw mut data_width,
+            sys::SPD_KEY_ECC_WIDTH,
+            sys::DATA_TYPE_UINT32,
+            &raw mut ecc_width,
             std::ptr::null::<libc::c_char>(),
         )
     };
@@ -244,13 +294,17 @@ fn parse_spd(spd: &[u8]) -> anyhow::Result<DimmInfo> {
     let part_number = convert_str(pn);
     let serial_number = convert_str(sn);
 
-    Ok(DimmInfo {
+    let info = DimmInfo {
         module_mfg,
         dram_mfg,
         part_number,
         serial_number,
         dram_width,
-    })
+        data_width,
+        ecc_width,
+    };
+
+    Ok((info, spd_json))
 }
 
 /// A handle to a `zen_umc` device on the system.
@@ -327,7 +381,7 @@ impl ZenUmc {
                 );
                 let count = data.size() / std::mem::size_of::<D>();
                 let mut data_arr = vec![D::default(); count];
-                data.mgd_addr.addr = data_arr.as_mut_ptr() as *mut _;
+                data.mgd_addr.addr = data_arr.as_mut_ptr().cast();
                 self.raw_get_data(&mut data)
                     .with_context(|| format!("Failed to get {descr} for {scope}"))?;
                 assert_eq!(
@@ -442,6 +496,7 @@ impl ZenUmc {
         'chan_loop: for c in 0..sys::MC_ZEN_MAX_CHANS {
             let mut chan = Channel {
                 chan: c,
+                slot: TURIN_CHAN_MAP[c as usize], // XXX
                 dimms: vec![],
                 phy: None,
             };
@@ -458,7 +513,8 @@ impl ZenUmc {
                 let mut dimm = Dimm {
                     dimm: d,
                     spd: vec![],
-                    info: None,
+                    spd_json: vec![],
+                    info: Default::default(),
                     ranks: vec![],
                     phy: None,
                 };
@@ -475,10 +531,11 @@ impl ZenUmc {
                     Ok(spd) => {
                         dimm.spd = spd;
                         // We'll also try parsing the SPD and pulling out some bits
-                        let dimm_info = parse_spd(&dimm.spd).with_context(|| {
+                        let (dimm_info, spd_json) = parse_spd(&dimm.spd).with_context(|| {
                             format!("Failed to parse SPD data for Channel {c} DIMM {d}")
                         })?;
-                        dimm.info = Some(dimm_info);
+                        dimm.info = dimm_info;
+                        dimm.spd_json = spd_json;
                     }
                     Err(e) if e.is::<NoData>() => {}
                     Err(err) => anyhow::bail!(err),

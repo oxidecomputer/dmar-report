@@ -133,6 +133,8 @@ pub const SPD_KEY_MFG_DRAM_MFG_NAME: *const c_char = c"mfg.dram-mfg-name".as_ptr
 pub const SPD_KEY_MFG_MOD_PN: *const c_char = c"mfg.module-pn".as_ptr();
 pub const SPD_KEY_MFG_MOD_SN: *const c_char = c"mfg.module-sn".as_ptr();
 pub const SPD_KEY_DRAM_WIDTH: *const c_char = c"dram.width".as_ptr();
+pub const SPD_KEY_DATA_WIDTH: *const c_char = c"channel.data-width".as_ptr();
+pub const SPD_KEY_ECC_WIDTH: *const c_char = c"channel.ecc-width".as_ptr();
 
 pub const DATA_TYPE_UINT32: c_int = 6;
 pub const DATA_TYPE_STRING: c_int = 9;
@@ -143,5 +145,49 @@ pub enum nvlist_t {}
 unsafe extern "C" {
     pub fn nvlist_free(_: *mut nvlist_t);
     pub fn nvlist_lookup_pairs(_: *mut nvlist_t, _: c_int, ...) -> c_int;
-    pub fn nvlist_print(_: *mut (), _: *mut nvlist_t);
+    pub fn nvlist_print_json(_: *mut libc::FILE, _: *mut nvlist_t) -> c_int;
+}
+
+pub enum kvm_t {}
+
+#[repr(C)]
+pub struct nlist {
+    pub n_name: *mut libc::c_char,
+    pub n_value: libc::c_long,
+    pub n_scnum: libc::c_short,
+    pub n_type: libc::c_ushort,
+    pub n_sclass: libc::c_char,
+    pub n_numaux: libc::c_char,
+}
+
+impl Default for nlist {
+    fn default() -> Self {
+        Self {
+            n_name: std::ptr::null_mut(),
+            n_value: Default::default(),
+            n_scnum: Default::default(),
+            n_type: Default::default(),
+            n_sclass: Default::default(),
+            n_numaux: Default::default(),
+        }
+    }
+}
+
+#[link(name = "kvm")]
+unsafe extern "C" {
+    pub fn kvm_open(
+        _: *const libc::c_char,
+        _: *const libc::c_char,
+        _: *const libc::c_char,
+        _: libc::c_int,
+        _: *const libc::c_char,
+    ) -> *mut kvm_t;
+    pub fn kvm_close(_: *mut kvm_t) -> libc::c_int;
+    pub fn kvm_nlist(_: *mut kvm_t, _: *mut nlist) -> libc::c_int;
+    pub fn kvm_kread(
+        _: *mut kvm_t,
+        _: libc::uintptr_t,
+        _: *mut libc::c_void,
+        _: libc::size_t,
+    ) -> libc::ssize_t;
 }
