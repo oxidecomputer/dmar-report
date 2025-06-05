@@ -401,6 +401,13 @@ impl ZenUmc {
                 anyhow::bail!(RankNotEnabled)
             }
 
+            // Don't panic since `MDT_PHY_DATA` hasn't landed yet
+            sys::mc_get_data_error::MGD_INVALID_TYPE
+                if data_type == sys::mc_data_type::MDT_PHY_DATA =>
+            {
+                anyhow::bail!(NoData)
+            }
+
             sys::mc_get_data_error(e) => {
                 panic!("unexpected error querying for {descr} for {scope}: {e}")
             }
