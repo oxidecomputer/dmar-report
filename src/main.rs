@@ -121,7 +121,7 @@ fn main() -> anyhow::Result<()> {
         }
         #[derive(serde::Serialize)]
         struct SubChannel<'a> {
-            dq_margins: &'a [mc::Margin],
+            data_eyes: &'a [mc::DataEye],
         }
 
         #[rustfmt::skip]
@@ -133,7 +133,7 @@ fn main() -> anyhow::Result<()> {
                 dimms: c.dimms.iter().map(|d| (d.dimm, Dimm {
                     ranks: d.ranks.iter().map(|r| (r.rank, Rank {
                         sub_chans: r.sub_chans.iter().map(|s| SubChannel {
-                            dq_margins: &s.margins
+                            data_eyes: &s.data_eyes
                         }).collect()
                     })).collect()
                 })).collect()

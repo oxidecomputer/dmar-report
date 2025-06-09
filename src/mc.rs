@@ -18,6 +18,7 @@ pub struct Channel {
     pub slot: char,
     pub dimms: Vec<Dimm>,
     phy: Option<ChannelPhyData>,
+    vrefdac_pair: VrefDacPair,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -26,9 +27,9 @@ pub struct DimmInfo {
     dram_mfg: String,
     part_number: String,
     serial_number: String,
-    dram_width: u32,
-    data_width: u32,
-    ecc_width: u32,
+    dram_width: usize,
+    data_width: usize,
+    ecc_width: usize,
 }
 
 impl Default for DimmInfo {
@@ -38,9 +39,9 @@ impl Default for DimmInfo {
             dram_mfg: "<Unknown>".into(),
             part_number: "<Unknown>".into(),
             serial_number: "<Unknown>".into(),
-            dram_width: 0,
-            data_width: 0,
-            ecc_width: 0,
+            dram_width: 4,
+            data_width: 32,
+            ecc_width: 8,
         }
     }
 }
@@ -60,7 +61,7 @@ pub struct Dimm {
 #[derive(Debug, Serialize)]
 pub struct Rank {
     pub rank: u8,
-    pub margin: Option<Margin>,
+    pub margin: Option<sys::mc_zen_margin_t>,
     pub sub_chans: Vec<SubChannel>,
     phy: Option<RankPhyData>,
 }
@@ -68,20 +69,75 @@ pub struct Rank {
 #[derive(Debug, Serialize)]
 pub struct SubChannel {
     pub sub_chan: u8,
-    pub margins: Vec<Margin>,
-}
-
-#[derive(Clone, Copy, Debug, Default, Serialize)]
-#[repr(C)]
-pub struct Margin {
-    rd_dq_delay: [u8; 2],
-    wr_dq_delay: [u8; 2],
-    rd_vref: [u8; 2],
-    wr_vref: [u8; 2],
+    pub margins: Vec<sys::mc_zen_margin_t>,
+    pub data_eyes: Vec<DataEye>,
+    tx_vrefs: [u8; sys::ZEN_UMC_MAX_BYTES],
 }
 
 fn all_zeros(arr: &[u8]) -> bool {
     arr.iter().all(|x| *x == 0)
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+pub enum VrefDacPair {
+    VrefDac01,
+    VrefDac23,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize)]
+pub struct DataEye {
+    read: (f64, f64),
+    write: (f64, f64),
+}
+
+/// The nominal voltage for DDR5 supported on Turin.
+const VDDQ: f64 = 1.1;
+
+/// Calculate a DRAM VREF value (in volts) for a given VrefDQ value.
+fn calc_dram_vref(vref_dq: u8) -> f64 {
+    // The DRAM Vref value in volts is expressed as a ratio of VDDQ between
+    // [0.35, 0.975] depending on the VrefDQ value in MR10:
+    //      VDDQ * (97.5 - VrefDQ * 0.5) / 100
+    // So each step of VrefDQ [0, 0x7D] corresponds to 55mV.
+    // See JEDEC DDR5 SDRAM Spec (JESD79-5B v1.20) Table 26.
+    assert!(
+        vref_dq <= 0x7D,
+        "VrefDQ exceeded allowed range [0.35, 0.975]"
+    );
+    const VREF_BASE: f64 = 0.975 * VDDQ;
+    const VREF_STEP: f64 = 0.0055;
+
+    // XXX: The JEDEC based calculation is off by 0.5mV compared to AMD's
+    // Memeye tool for some reason.
+    const VREF_BIAS: f64 = 0.0005;
+
+    VREF_BASE + VREF_BIAS - f64::from(vref_dq) * VREF_STEP
+}
+
+/// Calculate a Host VREF value (in volts) for a given VrefDAC control value.
+fn calc_host_vref(vref_dac: u8, eight_bit_dac: bool) -> f64 {
+    // VREF is relative to VDDQ but is not a fixed value. We use the given VrefDAC
+    // value to find the ratio and thus voltage.
+
+    /// There are multiple VREF generators that support different ranges and can be
+    /// selected by setting `UMC::Phy::DqDqsRcvCntrl[ExtVrefRange]`.
+    // XXX: We currently assume `UMC::Phy::DqDqsRcvCntrl[ExtVrefRange] = 0`
+    const EXT_VREF_RANGE: bool = false;
+
+    let (coff_0, coff_1, coff_2) = if EXT_VREF_RANGE {
+        (0.302, 0.0049, 0.0025)
+    } else {
+        (0.46, 0.00379, 0.00190)
+    };
+
+    let vddq_ratio = if eight_bit_dac {
+        coff_0 + f64::from(vref_dac >> 1) * coff_1 + f64::from(vref_dac & 1) * coff_2
+    } else {
+        assert_eq!(vref_dac & !0x7F, 0);
+        coff_0 + f64::from(vref_dac) * coff_1
+    };
+
+    VDDQ * vddq_ratio
 }
 
 #[serde_with::serde_as]
@@ -299,27 +355,39 @@ fn parse_spd(spd: &[u8]) -> anyhow::Result<(DimmInfo, Vec<u8>)> {
         dram_mfg,
         part_number,
         serial_number,
-        dram_width,
-        data_width,
-        ecc_width,
+        dram_width: dram_width as usize,
+        data_width: data_width as usize,
+        ecc_width: ecc_width as usize,
     };
 
     Ok((info, spd_json))
 }
 
 /// A handle to a `zen_umc` device on the system.
-pub struct ZenUmc(File);
+pub struct ZenUmc {
+    umc_dev: File,
+    usmn_dev: File,
+}
 
 impl ZenUmc {
     const AMDZEN_DEV_PATH: &str = "/devices/pseudo/amdzen@0/";
 
-    pub fn open(umc: u8) -> anyhow::Result<Self> {
-        let dev_path =
-            Self::umc_dev_path(umc).with_context(|| format!("Failed to get zen umc dev path"))?;
-        let file = File::open(&dev_path)
-            .with_context(|| format!("Failed to open zen_umc device @ {}", dev_path.display()))?;
+    pub fn open(soc: u8) -> anyhow::Result<Self> {
+        let umc_dev_path = Self::zen_dev_path("zen_umc", &format!("mc-umc-{soc}"))
+            .with_context(|| format!("Failed to get zen umc dev path"))?;
+        let umc_dev = File::open(&umc_dev_path).with_context(|| {
+            format!("Failed to open zen_umc device @ {}", umc_dev_path.display())
+        })?;
 
-        Ok(ZenUmc(file))
+        let usmn_dev_path = Self::zen_dev_path("usmn", &format!("usmn.{soc}"))
+            .with_context(|| format!("Failed to get usmn dev path"))?;
+        let usmn_dev = File::options()
+            .read(true)
+            .write(true)
+            .open(&usmn_dev_path)
+            .with_context(|| format!("Failed to open usmn device @ {}", usmn_dev_path.display()))?;
+
+        Ok(ZenUmc { umc_dev, usmn_dev })
     }
 
     fn raw_get_data(&self, data: &mut sys::mc_get_data) -> std::io::Result<()> {
@@ -328,7 +396,13 @@ impl ZenUmc {
             "invalid type for get data request: {}",
             data.mgd_type.0
         );
-        let ret = unsafe { libc::ioctl(self.0.as_raw_fd(), sys::MC_IOC_GET_DATA, data as *mut _) };
+        let ret = unsafe {
+            libc::ioctl(
+                self.umc_dev.as_raw_fd(),
+                sys::MC_IOC_GET_DATA,
+                data as *mut _,
+            )
+        };
         if ret == -1 {
             return Err(Error::last_os_error());
         }
@@ -430,7 +504,7 @@ impl ZenUmc {
         )
     }
 
-    fn get_rank_margin(&self, c: u8, d: u8, r: u8) -> anyhow::Result<Margin> {
+    fn get_rank_margin(&self, c: u8, d: u8, r: u8) -> anyhow::Result<sys::mc_zen_margin_t> {
         let mut margin = self.get_data(
             DataScope::Rank(c, d, r),
             sys::mc_data_type::MDT_MARGINS,
@@ -444,7 +518,13 @@ impl ZenUmc {
         Ok(margin.pop().unwrap())
     }
 
-    fn get_lane_margins(&self, c: u8, d: u8, r: u8, sc: u8) -> anyhow::Result<Vec<Margin>> {
+    fn get_lane_margins(
+        &self,
+        c: u8,
+        d: u8,
+        r: u8,
+        sc: u8,
+    ) -> anyhow::Result<Vec<sys::mc_zen_margin_t>> {
         self.get_data(
             DataScope::SubChannel(c, d, r, sc),
             sys::mc_data_type::MDT_MARGINS,
@@ -452,7 +532,236 @@ impl ZenUmc {
         )
     }
 
-    fn fill_ranks(&self, c: u8, dimm: &mut Dimm) -> anyhow::Result<()> {
+    fn smn_read(&self, addr: u32) -> std::io::Result<u32> {
+        let mut req = sys::usmn_reg_t {
+            usr_addr: addr,
+            usr_data: 0,
+            usr_size: 4,
+        };
+        let ret = unsafe { libc::ioctl(self.usmn_dev.as_raw_fd(), sys::USMN_READ, &raw mut req) };
+        if ret == -1 {
+            return Err(Error::last_os_error());
+        }
+        Ok(req.usr_data)
+    }
+
+    fn smn_write(&self, addr: u32, data: u32) -> std::io::Result<()> {
+        let mut req = sys::usmn_reg_t {
+            usr_addr: addr,
+            usr_data: data,
+            usr_size: 4,
+        };
+        let ret = unsafe { libc::ioctl(self.usmn_dev.as_raw_fd(), sys::USMN_WRITE, &raw mut req) };
+        if ret == -1 {
+            return Err(Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    fn write_vrefs(
+        &self,
+        chan: &Channel,
+        dimm: &Dimm,
+        rank: &Rank,
+        sub_chan: u8,
+    ) -> anyhow::Result<[u8; sys::ZEN_UMC_MAX_BYTES]> {
+        let (c, d, r) = (chan.chan, dimm.dimm, rank.rank);
+
+        // UMC::SrsmIndex and UMC::SrsmData
+        assert!(c < sys::MC_ZEN_MAX_CHANS);
+        let idx_addr = 0x0510A0 | (u32::from(c) << 20);
+        let data_addr = 0x0510A4 | (u32::from(c) << 20);
+
+        let base_srsm_idx = [
+            [[0x3FC, 0x3F8], [0x3F4, 0x3F0]],
+            [[0x3EC, 0x3E8], [0x3E4, 0x3E0]],
+        ];
+        assert!(d < sys::MC_ZEN_MAX_DIMMS);
+        assert!(r < sys::MC_ZEN_MAX_RANKS);
+        assert!(sub_chan < sys::MC_ZEN_MAX_SUBCHANS);
+        let base_srsm_idx = base_srsm_idx[d as usize][r as usize][sub_chan as usize];
+
+        // The Write Vref is stored at the relevant SRSM index like so:
+        //      [IDX+0] = D8:D5
+        //      [IDX+1] = D9
+        //      [IDX+2] = D3-D0
+        //      [IDX+3] = D4
+
+        let mut vrefs = [0; sys::ZEN_UMC_MAX_BYTES];
+        for (off, bytes) in [5..=8, 9..=9, 0..=3, 4..=4].into_iter().enumerate() {
+            self.smn_write(idx_addr, base_srsm_idx + off as u32)
+                .with_context(|| {
+                    format!("Failed to write SRSM index for Write Vref byte(s) {bytes:?}")
+                })?;
+            let vref_bytes = self.smn_read(data_addr).with_context(|| {
+                format!("Failed to read SRSM data for Write Vref byte(s) {bytes:?}")
+            })?;
+            vrefs[bytes.clone()].copy_from_slice(&vref_bytes.to_le_bytes()[..bytes.count()]);
+        }
+
+        Ok(vrefs)
+    }
+
+    fn read_vrefs(
+        &self,
+        chan: &Channel,
+        dimm: &Dimm,
+        sub_chan: usize,
+    ) -> anyhow::Result<impl Iterator<Item = (u8, u8, bool)> + Clone> {
+        let data_bits = dimm.info.data_width;
+        assert!(sub_chan < sys::MC_ZEN_MAX_SUBCHANS as usize);
+
+        let Some(chan_phy) = &chan.phy else {
+            anyhow::bail!(NoData);
+        };
+
+        // Grab the right VrefDAC pair 0/1 or 2/3
+        let vref_dacs = if let VrefDacPair::VrefDac01 = chan.vrefdac_pair {
+            (&chan_phy.vref_dac0, &chan_phy.vref_dac1)
+        } else {
+            (&chan_phy.vref_dac2, &chan_phy.vref_dac3)
+        };
+
+        // The VrefDAC values are organized with the data byte values for all subchannels first,
+        // followed by the error byte values:
+        //      DByte 0 Bit[0-7, DBI] ----+
+        //      DByte 1 Bit[0-7, DBI]     |    SubChannel 0 DByte 0-3
+        //      DByte 2 Bit[0-7, DBI]     |
+        //      DByte 3 Bit[0-7, DBI] ----+
+        //      DByte 4 Bit[0-7, DBI] ----+
+        //      DByte 5 Bit[0-7, DBI]     |    SubChannel 1 DByte 0-3
+        //      DByte 6 Bit[0-7, DBI]     |
+        //      DByte 7 Bit[0-7, DBI] ----+
+        //      DByte 8 Bit[0-7, DBI] -----    SubChannel 0 DByte 4 (ECC)
+        //      DByte 9 Bit[0-7, DBI] -----    SubChannel 1 DByte 4 (ECC)
+        //
+        // We also don't care for the DBI values and skip those.
+        let data_sz = (data_bits / 8) * sys::ZEN_UMC_VREF_DAC_CTLS;
+        let errs_off = sys::MC_ZEN_MAX_SUBCHANS as usize * data_sz;
+
+        let vref_dac0 = (
+            &vref_dacs.0[sub_chan * data_sz..][..data_sz],
+            &vref_dacs.0[errs_off..][sub_chan * sys::ZEN_UMC_VREF_DAC_CTLS..]
+                [..sys::ZEN_UMC_VREF_DAC_CTLS - 1],
+        );
+        // The trained Vref will be the mid-point between the VrefDAC pair.
+        // If RxDFE is disabled, we'll have no values treat VrefDAC1 = VrefDAC0 so
+        // the mid-point is just VrefDAC0.
+        let vref_dac1 = if all_zeros(vref_dacs.1) {
+            vref_dac0
+        } else {
+            (
+                &vref_dacs.1[sub_chan * data_sz..][..data_sz],
+                &vref_dacs.1[errs_off..][sub_chan * sys::ZEN_UMC_VREF_DAC_CTLS..]
+                    [..sys::ZEN_UMC_VREF_DAC_CTLS - 1],
+            )
+        };
+
+        let vref_dac0_data = vref_dac0
+            .0
+            .chunks_exact(sys::ZEN_UMC_VREF_DAC_CTLS)
+            .map(|c| c.into_iter().copied().take(sys::ZEN_UMC_VREF_DAC_CTLS - 1))
+            .flatten();
+        let vref_dac1_data = vref_dac1
+            .0
+            .chunks_exact(sys::ZEN_UMC_VREF_DAC_CTLS)
+            .map(|c| c.into_iter().copied().take(sys::ZEN_UMC_VREF_DAC_CTLS - 1))
+            .flatten();
+        let read_vrefs = vref_dac0_data
+            .zip(vref_dac1_data)
+            .chain(vref_dac0.1.iter().copied().zip(vref_dac1.1.iter().copied()))
+            .map(|(vref_dac0, vref_dac1)| {
+                let eight_bit_dac = (vref_dac0 & !0x7F) != 0 || (vref_dac1 & !0x7F) != 0;
+                let vref_offset = vref_dac1.abs_diff(vref_dac0) / 2;
+                (vref_dac0, vref_offset, eight_bit_dac)
+            });
+
+        Ok(read_vrefs)
+    }
+
+    /// Converts the raw margin results to a data eye width (in volts) and height (in UI).
+    fn margin_to_dataeye(
+        &self,
+        chan: &Channel,
+        dimm: &Dimm,
+        rank: &Rank,
+        sub_chan: &SubChannel,
+    ) -> anyhow::Result<Vec<DataEye>> {
+        let (c, d, r, sc) = (chan.chan, dimm.dimm, rank.rank, sub_chan.sub_chan);
+        let data_bits = dimm.info.data_width;
+        let err_bits = dimm.info.ecc_width;
+        assert!(sc < sys::MC_ZEN_MAX_SUBCHANS);
+        assert_eq!(
+            sub_chan.margins.len(),
+            data_bits + err_bits,
+            "Number of margin results not equivalent to number of data ({data}) + error ({err}) bits",
+            data = data_bits,
+            err = err_bits,
+        );
+
+        let read_vrefs = self.read_vrefs(chan, dimm, sc.into()).with_context(|| {
+            format!(
+                "Failed to get trained Rx Vrefs for {}",
+                DataScope::SubChannel(c, d, r, sc)
+            )
+        })?;
+
+        // The summarized margin results are relative to the min/max trained Vref across ALL lanes.
+        fn minmax_vref(vrefs: impl Iterator<Item = u8>) -> (u8, u8) {
+            vrefs.fold((u8::MAX, u8::MIN), |(min, max), vref| {
+                (vref.min(min), vref.max(max))
+            })
+        }
+        let (read_min, read_max) = minmax_vref(read_vrefs.clone().map(|v| v.0));
+        let (write_min, write_max) = minmax_vref(sub_chan.tx_vrefs.into_iter());
+
+        let data_eyes = sub_chan
+            .margins
+            .iter()
+            .zip(read_vrefs)
+            .map(|(margin, (_, vref_offset, eight_bit_dac))| {
+                let data_eye = |dq_delay: [u8; 2], vref: [u8; 2], min: u8, max: u8, write| {
+                    let width = f64::from(dq_delay[0]) + f64::from(dq_delay[1]);
+                    let width_ui = width / 64.0;
+
+                    let neg_vref = min.checked_sub(vref[0]).expect("Negative Vref margin");
+                    let pos_vref = max.checked_add(vref[1]).expect("Positive Vref");
+                    let (neg_vref_v, pos_vref_v) = if write {
+                        (calc_dram_vref(neg_vref), calc_dram_vref(pos_vref))
+                    } else {
+                        (
+                            calc_host_vref(neg_vref + vref_offset, eight_bit_dac),
+                            calc_host_vref(pos_vref + vref_offset, eight_bit_dac),
+                        )
+                    };
+                    let height_v = (pos_vref_v - neg_vref_v).abs();
+                    (width_ui, height_v)
+                };
+
+                let read = data_eye(
+                    margin.rd_dq_delay,
+                    margin.rd_vref,
+                    read_min,
+                    read_max,
+                    false,
+                );
+                let write = data_eye(
+                    margin.wr_dq_delay,
+                    margin.wr_vref,
+                    write_min,
+                    write_max,
+                    true,
+                );
+
+                DataEye { read, write }
+            })
+            .collect();
+
+        Ok(data_eyes)
+    }
+
+    fn fill_ranks(&self, chan: &Channel, dimm: &mut Dimm) -> anyhow::Result<()> {
+        let c = chan.chan;
         let d = dimm.dimm;
         'rank_loop: for r in 0..sys::MC_ZEN_MAX_RANKS {
             let mut rank = Rank {
@@ -480,10 +789,24 @@ impl ZenUmc {
                 let mut sub_chan = SubChannel {
                     sub_chan: sc,
                     margins: vec![],
+                    data_eyes: vec![],
+                    tx_vrefs: Default::default(),
                 };
 
+                sub_chan.tx_vrefs = self.write_vrefs(chan, dimm, &rank, sc).with_context(|| {
+                    format!(
+                        "Failed to get trained Tx VrefDQs for {}",
+                        DataScope::SubChannel(c, d, r, sc)
+                    )
+                })?;
+
                 match self.get_lane_margins(c, d, r, sc) {
-                    Ok(m) => sub_chan.margins = m,
+                    Ok(m) => {
+                        sub_chan.margins = m;
+                        sub_chan.data_eyes =
+                            self.margin_to_dataeye(chan, dimm, &rank, &sub_chan)
+                                .context("Failed to convert margin results to data eye")?;
+                    }
                     Err(e) if e.is::<NoData>() => {}
                     Err(err) => anyhow::bail!(err),
                 }
@@ -506,10 +829,18 @@ impl ZenUmc {
                 slot: TURIN_CHAN_MAP[c as usize], // XXX
                 dimms: vec![],
                 phy: None,
+                vrefdac_pair: VrefDacPair::VrefDac01,
             };
 
             match self.get_phy_data(DataScope::Chan(c)) {
-                Ok(pdata) => chan.phy = Some(pdata[0]),
+                Ok(pdata) => {
+                    // We only care for the P-state 0 PHY data.
+                    let chan_phy: ChannelPhyData = pdata[0];
+                    if !all_zeros(&chan_phy.vref_dac2) {
+                        chan.vrefdac_pair = VrefDacPair::VrefDac23;
+                    }
+                    chan.phy = Some(chan_phy);
+                }
                 Err(e) if e.is::<NoData>() => {}
                 // This channel isn't populated, move on
                 Err(e) if e.is::<ChanEmpty>() => continue 'chan_loop,
@@ -549,7 +880,7 @@ impl ZenUmc {
                 }
 
                 // Populate all the ranks for this DIMM
-                self.fill_ranks(c, &mut dimm)
+                self.fill_ranks(&chan, &mut dimm)
                     .with_context(|| format!("Failed to get Rank data for Channel {c} DIMM {d}"))?;
 
                 chan.dimms.push(dimm);
@@ -561,10 +892,10 @@ impl ZenUmc {
         Ok(chans)
     }
 
-    fn umc_dev_path(umc: u8) -> anyhow::Result<PathBuf> {
-        let dev_path = PathBuf::from(Self::AMDZEN_DEV_PATH);
+    fn zen_dev_path(dev: &str, node: &str) -> anyhow::Result<PathBuf> {
+        let base_dev_path = PathBuf::from(Self::AMDZEN_DEV_PATH);
 
-        let dir = dev_path
+        let dir = base_dev_path
             .read_dir()
             .context("Failed to read amdzen devices")?;
         for entry in dir {
@@ -575,28 +906,26 @@ impl ZenUmc {
                     entry.file_name().display()
                 )
             })?;
-            if !entry.file_name().to_string_lossy().starts_with("zen_umc") || !etype.is_dir() {
+            if !entry.file_name().to_string_lossy().starts_with(dev) || !etype.is_dir() {
                 continue;
             }
 
-            // Found the base zen_umc path (e.g. /devices/pseudo/amdzen@0/zen_umc@4)
-            let mut zen_umc_path = entry.path();
+            // Found the base dev path (e.g. /devices/pseudo/amdzen@0/zen_umc@4)
+            let mut dev_path = entry.path();
 
-            // Now make sure the requested `mc-umc-{umc}` node exists
-            zen_umc_path
-                .as_mut_os_string()
-                .push(format!(":mc-umc-{umc}"));
-            let ftype = std::fs::metadata(&zen_umc_path)
-                .with_context(|| format!("Failed to get metadata for {}", zen_umc_path.display()))?
+            // Now make sure the requested node (e.g. `mc-umc-0`) exists
+            dev_path.as_mut_os_string().push(format!(":{node}"));
+            let ftype = std::fs::metadata(&dev_path)
+                .with_context(|| format!("Failed to get metadata for {}", dev_path.display()))?
                 .file_type();
             anyhow::ensure!(
                 ftype.is_char_device(),
                 "Expected char device at {}",
-                zen_umc_path.display()
+                dev_path.display()
             );
-            return Ok(zen_umc_path);
+            return Ok(dev_path);
         }
 
-        anyhow::bail!("Failed to find matching memory controller device")
+        anyhow::bail!("Failed to find matching {dev} device")
     }
 }

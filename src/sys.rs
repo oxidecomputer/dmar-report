@@ -19,6 +19,18 @@ type Ioctl = libc::Ioctl;
 #[cfg(not(target_os = "linux"))]
 type Ioctl = i32;
 
+const USMN_IOCTL: Ioctl = (b'u' as Ioctl) << 24 | (b's' as Ioctl) << 16 | (b'm' as Ioctl) << 8;
+pub const USMN_READ: Ioctl = USMN_IOCTL | 0x01;
+pub const USMN_WRITE: Ioctl = USMN_IOCTL | 0x02;
+
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct usmn_reg_t {
+    pub usr_addr: u32,
+    pub usr_data: u32,
+    pub usr_size: u32,
+}
+
 const MC_IOC: Ioctl = 0x4d43 << 16;
 pub const MC_IOC_GET_DATA: Ioctl = MC_IOC | 8;
 
@@ -108,6 +120,15 @@ impl Default for mc_get_data {
             mgd_size: mgd_size { size: 0 },
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, serde::Serialize)]
+#[repr(C)]
+pub struct mc_zen_margin_t {
+    pub rd_dq_delay: [u8; 2],
+    pub wr_dq_delay: [u8; 2],
+    pub rd_vref: [u8; 2],
+    pub wr_vref: [u8; 2],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
