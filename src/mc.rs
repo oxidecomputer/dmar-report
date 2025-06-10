@@ -724,8 +724,17 @@ impl ZenUmc {
                     let width = f64::from(dq_delay[0]) + f64::from(dq_delay[1]);
                     let width_ui = width / 64.0;
 
+                    // XXX: If we failed to read the trained Tx Vrefs, set things up so that we
+                    // get a decent-ish approximation. This will only be off by as the voltage
+                    // corresponding to the difference of the actual min/max values (which are
+                    // generally not too far apart).
+                    let (min, max) = if write && write_min == write_max && write_min == 0xFF {
+                        (vref[0], vref[0])
+                    } else {
+                        (min, max)
+                    };
                     let neg_vref = min.checked_sub(vref[0]).expect("Negative Vref margin");
-                    let pos_vref = max.checked_add(vref[1]).expect("Positive Vref");
+                    let pos_vref = max.checked_add(vref[1]).expect("Positive Vref margin");
                     let (neg_vref_v, pos_vref_v) = if write {
                         (calc_dram_vref(neg_vref), calc_dram_vref(pos_vref))
                     } else {
