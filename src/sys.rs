@@ -19,18 +19,6 @@ type Ioctl = libc::Ioctl;
 #[cfg(not(target_os = "linux"))]
 type Ioctl = i32;
 
-const USMN_IOCTL: Ioctl = (b'u' as Ioctl) << 24 | (b's' as Ioctl) << 16 | (b'm' as Ioctl) << 8;
-pub const USMN_READ: Ioctl = USMN_IOCTL | 0x01;
-pub const USMN_WRITE: Ioctl = USMN_IOCTL | 0x02;
-
-#[derive(Clone, Copy)]
-#[repr(C)]
-pub struct usmn_reg_t {
-    pub usr_addr: u32,
-    pub usr_data: u32,
-    pub usr_size: u32,
-}
-
 const MC_IOC: Ioctl = 0x4d43 << 16;
 pub const MC_IOC_GET_DATA: Ioctl = MC_IOC | 8;
 
@@ -41,8 +29,9 @@ impl mc_data_type {
     pub const MDT_SPD: Self = Self(0);
     pub const MDT_MARGINS: Self = Self(1);
     pub const MDT_PHY_DATA: Self = Self(2);
+    pub const MDT_DRAM_MODE_REGS: Self = Self(3);
 
-    pub const MDT_MAX: Self = Self::MDT_PHY_DATA;
+    pub const MDT_MAX: Self = Self::MDT_DRAM_MODE_REGS;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -129,6 +118,58 @@ pub struct mc_zen_margin_t {
     pub wr_dq_delay: [u8; 2],
     pub rd_vref: [u8; 2],
     pub wr_vref: [u8; 2],
+}
+
+#[derive(Debug, serde::Serialize)]
+#[repr(C)]
+
+pub struct mc_dram_mode_regs_t {
+    pub mdmr_nregs: u8,
+    pub mdmr_ndies: u8,
+    pub mdmr_moderegs: [u8],
+}
+
+impl mc_dram_mode_regs_t {
+    pub fn from_buf(buf: Box<[u8]>) -> Box<Self> {
+        assert!(buf.len() >= 2, "expected at least nregs and ndies");
+        let nregs = buf[0];
+        let ndies = buf[1];
+        let sz = usize::from(nregs) * usize::from(ndies);
+        assert_eq!(
+            buf.len(),
+            2 * std::mem::size_of::<u8>() + sz,
+            "invalid mode register buffer"
+        );
+        // Turn the boxed slice into a raw (thin) pointer
+        let buf_ptr = Box::into_raw(buf) as *mut u8;
+        // Create a raw (fat) slice with a length of `nregs * ndies`. Note this still
+        // points at the beginning of the overall buffer.
+        let buf_slice = std::ptr::slice_from_raw_parts_mut(buf_ptr, sz);
+        // Cast to `*mut mc_dram_mode_regs_t` which preserves the length metadata of `buf_slice`
+        // but now represents the length of the dynamically-sized portion of `mc_dram_mode_regs_t`.
+        let ptr = buf_slice as *mut Self;
+        // Finally, convert the raw pointer to a Box
+        // SAFTEY: `ptr` came from `Box::into_raw` and follows the expected memory layout.
+        unsafe { Box::from_raw(ptr) }
+    }
+
+    /// Returns a slice representing the value of the requested mode register
+    /// for all DRAMs, if present.
+    pub fn get_regs(&self, reg: u8) -> &[u8] {
+        assert!(
+            reg < self.mdmr_nregs,
+            "Invalid DRAM Mode Register: {reg} (max {})",
+            self.mdmr_nregs
+        );
+        assert_eq!(
+            self.mdmr_moderegs.len(),
+            usize::from(self.mdmr_ndies) * usize::from(self.mdmr_nregs)
+        );
+        self.mdmr_moderegs
+            .chunks_exact(self.mdmr_ndies.into())
+            .nth(reg.into())
+            .unwrap()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]

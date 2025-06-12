@@ -71,7 +71,7 @@ pub struct SubChannel {
     pub sub_chan: u8,
     pub margins: Vec<sys::mc_zen_margin_t>,
     pub data_eyes: Vec<DataEye>,
-    tx_vrefs: [u8; sys::ZEN_UMC_MAX_BYTES],
+    mode_regs: Option<Box<sys::mc_dram_mode_regs_t>>,
 }
 
 fn all_zeros(arr: &[u8]) -> bool {
@@ -366,7 +366,6 @@ fn parse_spd(spd: &[u8]) -> anyhow::Result<(DimmInfo, Vec<u8>)> {
 /// A handle to a `zen_umc` device on the system.
 pub struct ZenUmc {
     umc_dev: File,
-    usmn_dev: File,
 }
 
 impl ZenUmc {
@@ -379,15 +378,7 @@ impl ZenUmc {
             format!("Failed to open zen_umc device @ {}", umc_dev_path.display())
         })?;
 
-        let usmn_dev_path = Self::zen_dev_path("usmn", &format!("usmn.{soc}"))
-            .with_context(|| format!("Failed to get usmn dev path"))?;
-        let usmn_dev = File::options()
-            .read(true)
-            .write(true)
-            .open(&usmn_dev_path)
-            .with_context(|| format!("Failed to open usmn device @ {}", usmn_dev_path.display()))?;
-
-        Ok(ZenUmc { umc_dev, usmn_dev })
+        Ok(ZenUmc { umc_dev })
     }
 
     fn raw_get_data(&self, data: &mut sys::mc_get_data) -> std::io::Result<()> {
@@ -475,9 +466,10 @@ impl ZenUmc {
                 anyhow::bail!(RankNotEnabled)
             }
 
-            // Don't panic since `MDT_PHY_DATA` hasn't landed yet
+            // Don't panic for more recent variants
             sys::mc_get_data_error::MGD_INVALID_TYPE
-                if data_type == sys::mc_data_type::MDT_PHY_DATA =>
+                if data_type == sys::mc_data_type::MDT_PHY_DATA
+                    || data_type == sys::mc_data_type::MDT_DRAM_MODE_REGS =>
             {
                 anyhow::bail!(NoData)
             }
@@ -532,74 +524,21 @@ impl ZenUmc {
         )
     }
 
-    fn smn_read(&self, addr: u32) -> std::io::Result<u32> {
-        let mut req = sys::usmn_reg_t {
-            usr_addr: addr,
-            usr_data: 0,
-            usr_size: 4,
-        };
-        let ret = unsafe { libc::ioctl(self.usmn_dev.as_raw_fd(), sys::USMN_READ, &raw mut req) };
-        if ret == -1 {
-            return Err(Error::last_os_error());
-        }
-        Ok(req.usr_data)
-    }
-
-    fn smn_write(&self, addr: u32, data: u32) -> std::io::Result<()> {
-        let mut req = sys::usmn_reg_t {
-            usr_addr: addr,
-            usr_data: data,
-            usr_size: 4,
-        };
-        let ret = unsafe { libc::ioctl(self.usmn_dev.as_raw_fd(), sys::USMN_WRITE, &raw mut req) };
-        if ret == -1 {
-            return Err(Error::last_os_error());
-        }
-        Ok(())
-    }
-
-    fn write_vrefs(
+    fn get_mode_regs(
         &self,
-        chan: &Channel,
-        dimm: &Dimm,
-        rank: &Rank,
-        sub_chan: u8,
-    ) -> anyhow::Result<[u8; sys::ZEN_UMC_MAX_BYTES]> {
-        let (c, d, r) = (chan.chan, dimm.dimm, rank.rank);
-
-        // UMC::SrsmIndex and UMC::SrsmData
-        assert!(c < sys::MC_ZEN_MAX_CHANS);
-        let idx_addr = 0x0510A0 | (u32::from(c) << 20);
-        let data_addr = 0x0510A4 | (u32::from(c) << 20);
-
-        let base_srsm_idx = [
-            [[0x3FC, 0x3F8], [0x3F4, 0x3F0]],
-            [[0x3EC, 0x3E8], [0x3E4, 0x3E0]],
-        ];
-        assert!(d < sys::MC_ZEN_MAX_DIMMS);
-        assert!(r < sys::MC_ZEN_MAX_RANKS);
-        assert!(sub_chan < sys::MC_ZEN_MAX_SUBCHANS);
-        let base_srsm_idx = base_srsm_idx[d as usize][r as usize][sub_chan as usize];
-
-        // The Write Vref is stored at the relevant SRSM index like so:
-        //      [IDX+0] = D8:D5
-        //      [IDX+1] = D9
-        //      [IDX+2] = D3-D0
-        //      [IDX+3] = D4
-
-        let mut vrefs = [0; sys::ZEN_UMC_MAX_BYTES];
-        for (off, bytes) in [5..=8, 9..=9, 0..=3, 4..=4].into_iter().enumerate() {
-            self.smn_write(idx_addr, base_srsm_idx + off as u32)
-                .with_context(|| {
-                    format!("Failed to write SRSM index for Write Vref byte(s) {bytes:?}")
-                })?;
-            let vref_bytes = self.smn_read(data_addr).with_context(|| {
-                format!("Failed to read SRSM data for Write Vref byte(s) {bytes:?}")
-            })?;
-            vrefs[bytes.clone()].copy_from_slice(&vref_bytes.to_le_bytes()[..bytes.count()]);
-        }
-
-        Ok(vrefs)
+        c: u8,
+        d: u8,
+        r: u8,
+        sc: u8,
+    ) -> anyhow::Result<Box<sys::mc_dram_mode_regs_t>> {
+        let reg_buf: Vec<u8> = self.get_data(
+            DataScope::SubChannel(c, d, r, sc),
+            sys::mc_data_type::MDT_DRAM_MODE_REGS,
+            "DRAM Mode Registers",
+        )?;
+        Ok(sys::mc_dram_mode_regs_t::from_buf(
+            reg_buf.into_boxed_slice(),
+        ))
     }
 
     fn read_vrefs(
@@ -705,6 +644,13 @@ impl ZenUmc {
                 DataScope::SubChannel(c, d, r, sc)
             )
         })?;
+        // DRAM Mode Register 10 contains the DRAM side VrefDQ values.
+        let Some(write_vrefs) = sub_chan.mode_regs.as_ref().map(|mr| mr.get_regs(10)) else {
+            anyhow::bail!(
+                "Failed to get trained Tx Vrefs for {}",
+                DataScope::SubChannel(c, d, r, sc)
+            )
+        };
 
         // The summarized margin results are relative to the min/max trained Vref across ALL lanes.
         fn minmax_vref(vrefs: impl Iterator<Item = u8>) -> (u8, u8) {
@@ -713,7 +659,7 @@ impl ZenUmc {
             })
         }
         let (read_min, read_max) = minmax_vref(read_vrefs.clone().map(|v| v.0));
-        let (write_min, write_max) = minmax_vref(sub_chan.tx_vrefs.into_iter());
+        let (write_min, write_max) = minmax_vref(write_vrefs.iter().copied());
 
         let data_eyes = sub_chan
             .margins
@@ -724,15 +670,6 @@ impl ZenUmc {
                     let width = f64::from(dq_delay[0]) + f64::from(dq_delay[1]);
                     let width_ui = width / 64.0;
 
-                    // XXX: If we failed to read the trained Tx Vrefs, set things up so that we
-                    // get a decent-ish approximation. This will only be off by as the voltage
-                    // corresponding to the difference of the actual min/max values (which are
-                    // generally not too far apart).
-                    let (min, max) = if write && write_min == write_max && write_min == 0xFF {
-                        (vref[0], vref[0])
-                    } else {
-                        (min, max)
-                    };
                     let neg_vref = min.checked_sub(vref[0]).expect("Negative Vref margin");
                     let pos_vref = max.checked_add(vref[1]).expect("Positive Vref margin");
                     let (neg_vref_v, pos_vref_v) = if write {
@@ -799,15 +736,27 @@ impl ZenUmc {
                     sub_chan: sc,
                     margins: vec![],
                     data_eyes: vec![],
-                    tx_vrefs: Default::default(),
+                    mode_regs: None,
                 };
 
-                sub_chan.tx_vrefs = self.write_vrefs(chan, dimm, &rank, sc).with_context(|| {
-                    format!(
-                        "Failed to get trained Tx VrefDQs for {}",
-                        DataScope::SubChannel(c, d, r, sc)
-                    )
-                })?;
+                match self.get_mode_regs(c, d, r, sc) {
+                    Ok(mr) => {
+                        // The number of DRAMs should match
+                        let bit_width = dimm.info.data_width + dimm.info.ecc_width;
+                        let ndrams = bit_width / dimm.info.dram_width;
+                        if usize::from(mr.mdmr_ndies) != ndrams {
+                            anyhow::bail!(
+                                "Unexpected number of DRAMs in Mode Register data for {}: {} vs {}",
+                                DataScope::SubChannel(c, d, r, sc),
+                                mr.mdmr_ndies,
+                                ndrams,
+                            );
+                        }
+                        sub_chan.mode_regs = Some(mr);
+                    }
+                    Err(e) if e.is::<NoData>() => {}
+                    Err(err) => anyhow::bail!(err),
+                }
 
                 match self.get_lane_margins(c, d, r, sc) {
                     Ok(m) => {
