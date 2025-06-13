@@ -42,17 +42,30 @@ fn cmd(prog: &str, args: &[&str]) -> anyhow::Result<String> {
 fn main() -> anyhow::Result<()> {
     use std::fs;
 
-    let out_dir = tempfile::tempdir().context("Failed to make tempdir")?;
-    let out_path = out_dir.path();
-
     let umc = mc::ZenUmc::open(0).context("Failed to get ZenUmc handle")?;
     let chans = umc.discover()?;
 
-    // 1. Write out the BDAT
+    // 0. Create temp folder to collect results into
+    let out_dir = tempfile::tempdir().context("Failed to make tempdir")?;
+    let hostname = cmd("/usr/bin/uname", &["-n"]).context("Failed to get hostname")?;
+    let out_path = out_dir.path().join(&hostname);
+    fs::create_dir(&out_path).context("Failed to create hostname dir")?;
+
+    let have_pilot = fs::exists("/usr/bin/pilot").context("Failed to check for pilot binary")?;
+
+    // 1. Write out the system info via pilot (if present)
+    if have_pilot {
+        let system_info = cmd("/usr/bin/pilot", &["local", "info", "-j"])
+            .context("Failed to grab system info with pilot")?;
+        fs::write(out_path.join("system_info.json"), system_info)
+            .context("Failed to write system info")?;
+    }
+
+    // 2. Write out the BDAT
     let bdat = bdat::find_bdat().context("Failed to get BDAT")?;
     fs::write(out_path.join("BDAT.bin"), &bdat).context("Failed to write BDAT")?;
 
-    // 2. Write out the SPD data
+    // 3. Write out the SPD data
     let spd_dir = out_path.join("SPD");
     fs::create_dir(&spd_dir).context("Failed to create SPD dir")?;
     for chan in &chans {
@@ -79,7 +92,7 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
-    // 3. Write out DIMM info
+    // 4. Write out DIMM info
     {
         #[derive(serde::Serialize)]
         struct Chan<'a> {
@@ -93,7 +106,6 @@ fn main() -> anyhow::Result<()> {
             .map(|c| Chan {
                 chan: c.chan,
                 slot: c.slot,
-                // dimms: c.dimms.iter().map(|d| Dimm { dimm: d.dimm, info: &d.info }).collect(),
                 dimms: c.dimms.iter().map(|d| (d.dimm, &d.info)).collect(),
             })
             .collect::<Vec<_>>();
@@ -103,7 +115,7 @@ fn main() -> anyhow::Result<()> {
         serde_json::to_writer(&mut dimms_json, &dimms).context("Failed to write out dimms.json")?;
     }
 
-    // 4. Pull out and write the margining data
+    // 5. Pull out and write the margining data
     {
         #[derive(serde::Serialize)]
         struct Chan<'a> {
@@ -145,18 +157,17 @@ fn main() -> anyhow::Result<()> {
             .context("Failed to write out margins.json")?;
     }
 
-    // 5. Also write out the full set of umc data (including PHY data)
+    // 6. Also write out the full set of umc data (including PHY data)
     {
         let mut raw_json = fs::File::create_new(out_path.join("raw.json"))?;
         serde_json::to_writer(&mut raw_json, &chans)?;
     }
 
     // Finally `tar` everything up
-    let hostname = cmd("/usr/bin/uname", &["-n"])?;
-    let datetime = cmd("/usr/bin/date", &["+%Y-%m-%dT%H:%M:%S"])?;
+    let datetime = cmd("/usr/bin/date", &["+%Y-%m-%dT-%H-%M-%S"])?;
     let archive = format!("/tmp/{hostname}-{datetime}.tar");
-    let out_dir = out_path.to_str().expect("non-unicode tmp path??");
-    cmd("tar", &["-cf", &archive, "-C", out_dir, "."]).context("Failed to tar results")?;
+    let out_dir = out_dir.path().to_str().expect("non-unicode tmp path??");
+    cmd("tar", &["-cf", &archive, "-C", out_dir, &hostname]).context("Failed to tar results")?;
     println!("{archive}");
 
     Ok(())
