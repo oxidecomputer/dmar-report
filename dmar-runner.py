@@ -3,12 +3,14 @@
 import argparse
 import concurrent.futures
 from datetime import datetime, timedelta
+import functools
 import logging
 import os
 import pathlib
 import re
 import subprocess
 import sys
+import time
 
 TOOLS = ['amd-host-image-builder', 'bootserver', 'dmar-report']
 
@@ -19,7 +21,8 @@ def output_on_err(*args, **kwargs):
         kwargs['check'] = True
         result = subprocess.run(*args, **kwargs)
     except subprocess.CalledProcessError as cpe:
-        err = cpe.stderr.decode('utf-8')
+        err = cpe.stderr if 'encoding' in kwargs else cpe.stderr.decode(
+            'utf-8')
         raise RuntimeError(
             f"Command {cpe.cmd!r} returned non-zero exit code {cpe.returncode}:\
             \n{err}"
@@ -27,10 +30,30 @@ def output_on_err(*args, **kwargs):
     return result
 
 
+def retry(count, sleep):
+    def retry_decorator(func):
+        @functools.wraps(func)
+        def retry_wrapper(*args, **kwargs):
+            last_err = None
+            for attempt in range(count):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as err:
+                    last_err = err
+                    time.sleep(sleep)
+                logging.info('%s attempt %d of %d.', func, attempt + 1, count)
+            raise Exception(
+                '{} failed after {} retries.'.format(func, count)
+            ) from last_err
+        return retry_wrapper
+    return retry_decorator
+
+
 class Target:
     def __init__(self, target):
         self.target = target
 
+    @retry(count=3, sleep=1)
     def serial(self):
         logging.info('Grabbing VPD for target %s', self.target)
         cmd = ['pfexec', 'humility', '-t', self.target, 'vpd',
@@ -43,18 +66,21 @@ class Target:
             "Failed to get serial of target %s from VPD: %s", self.target, vpd)
         sys.exit(1)
 
+    @retry(count=3, sleep=1)
     def power_off(self):
         logging.info('Powering off target %s', self.target)
         cmd = ['pfexec', 'humility', '-t', self.target, 'hiffy',
                '-c', 'Sequencer.set_state', '-a', 'state=A2']
         output_on_err(cmd)
 
+    @retry(count=3, sleep=1)
     def power_on(self):
         logging.info('Powering on target %s', self.target)
         cmd = ['pfexec', 'humility', '-t', self.target, 'hiffy',
                '-c', 'Sequencer.set_state', '-a', 'state=A0']
         output_on_err(cmd)
 
+    @retry(count=3, sleep=1)
     def uart_redirect(self, enable):
         logging.info('%s UART redirection on target %s',
                      "Enabling" if enable else "Disabling", self.target)
@@ -71,6 +97,7 @@ class Target:
         ]
         output_on_err(cmd)
 
+    @retry(count=3, sleep=1)
     def enable_netboot(self):
         logging.info('Enabling net boot for target %s', self.target)
         cmd = ['pfexec', 'humility', '-t', self.target, 'hiffy',
@@ -78,11 +105,13 @@ class Target:
                'startup_options=0x198']
         output_on_err(cmd)
 
+    @retry(count=3, sleep=1)
     def last_post_code(self):
         cmd = ['pfexec', 'humility', '-t', self.target, 'hiffy',
                '-c', 'FmcDemo.peek32', '-a', 'addr=0x60000220']
         return output_on_err(cmd, encoding='utf-8').stdout.strip().split()[-1]
 
+    @retry(count=3, sleep=1)
     def write_rom(self, image):
         logging.info('Switching to Flash1 for target %s', self.target)
         set_dev_cmd = ['pfexec', 'humility', '-t', self.target, 'hiffy',
@@ -93,6 +122,7 @@ class Target:
         # Don't use output_on_err because we don't want to capture output
         subprocess.run(flash_cmd, check=True)
 
+    @retry(count=3, sleep=1)
     def console(self):
         logging.info('Attaching to console for target %s', self.target)
         cmd = ['pfexec', 'humility', '-t', self.target, 'exec', 'console']
