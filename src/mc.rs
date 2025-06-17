@@ -265,38 +265,10 @@ fn parse_spd(spd: &[u8]) -> anyhow::Result<(DimmInfo, Vec<u8>)> {
     }
     assert_ne!(spd_nvl, std::ptr::null_mut());
 
-    struct NvList(*mut sys::nvlist_t);
-    impl Drop for NvList {
-        fn drop(&mut self) {
-            unsafe {
-                sys::nvlist_free(self.0);
-            }
-        }
-    }
-    let spd_nvl = NvList(spd_nvl);
-
-    let spd_json = {
-        let mut buf_ptr = std::ptr::null_mut();
-        let mut buf_sz = 0;
-        let buf = unsafe { libc::open_memstream(&raw mut buf_ptr, &raw mut buf_sz) };
-        if buf.is_null() {
-            return Err(Error::last_os_error()).context("Failed to get memstream to write SPD nvl");
-        }
-        unsafe {
-            sys::nvlist_print_json(buf, spd_nvl.0);
-        }
-        if unsafe { libc::fclose(buf) } != 0 {
-            return Err(Error::last_os_error()).context("Failed to close SPD nvl memstream");
-        }
-        if buf_ptr.is_null() || buf_sz == 0 {
-            anyhow::bail!("Failed to convert SPD");
-        }
-        let spd = Vec::from(unsafe { std::slice::from_raw_parts(buf_ptr.cast::<u8>(), buf_sz) });
-        unsafe {
-            libc::free(buf_ptr.cast());
-        }
-        spd
-    };
+    let spd_nvl = sys::NvList(spd_nvl);
+    let spd_json = spd_nvl
+        .to_json()
+        .context("Failed to convert SPD nvlist to json")?;
 
     let mut mmfg: *const libc::c_char = c"<Unknown>".as_ptr();
     let mut dmfg: *const libc::c_char = c"<Unknown>".as_ptr();
@@ -848,6 +820,40 @@ impl ZenUmc {
         }
 
         Ok(chans)
+    }
+
+    pub fn decode_snapshot(&self) -> anyhow::Result<Vec<u8>> {
+        let mut info = sys::mc_snapshot_info::default();
+        if unsafe {
+            libc::ioctl(
+                self.umc_dev.as_raw_fd(),
+                sys::MC_IOC_DECODE_SNAPSHOT_INFO,
+                &raw mut info,
+            )
+        } != 0
+        {
+            return Err(Error::last_os_error()).context("Failed to get decode snapshot info");
+        }
+
+        let mut snapshot_buf = vec![0u8; info.mcs_size as usize];
+        if unsafe {
+            libc::ioctl(
+                self.umc_dev.as_raw_fd(),
+                sys::MC_IOC_DECODE_SNAPSHOT,
+                snapshot_buf.as_mut_ptr(),
+            )
+        } != 0
+        {
+            return Err(Error::last_os_error()).context("Failed to get decode snapshot");
+        }
+
+        let snapshot_nvl = sys::NvList::from_buf(&snapshot_buf)
+            .context("Failed to unpack mc decode snapshot nvlist")?;
+        let snapshot_json = snapshot_nvl
+            .to_json()
+            .context("Failed to convert mc decode snapshot nvlist to json")?;
+
+        Ok(snapshot_json)
     }
 
     fn zen_dev_path(dev: &str, node: &str) -> anyhow::Result<PathBuf> {

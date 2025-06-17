@@ -20,7 +20,16 @@ type Ioctl = libc::Ioctl;
 type Ioctl = i32;
 
 const MC_IOC: Ioctl = 0x4d43 << 16;
+pub const MC_IOC_DECODE_SNAPSHOT_INFO: Ioctl = MC_IOC | 6;
+pub const MC_IOC_DECODE_SNAPSHOT: Ioctl = MC_IOC | 7;
 pub const MC_IOC_GET_DATA: Ioctl = MC_IOC | 8;
+
+#[derive(Clone, Copy, Debug, Default)]
+#[repr(C)]
+pub struct mc_snapshot_info {
+    pub mcs_size: u32,
+    pub mcs_gen: libc::c_uint,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(transparent)]
@@ -205,9 +214,68 @@ pub enum nvlist_t {}
 
 #[link(name = "nvpair")]
 unsafe extern "C" {
+    pub unsafe fn nvlist_unpack(
+        _: *mut libc::c_char,
+        _: libc::size_t,
+        _: *mut *mut nvlist_t,
+        _: c_int,
+    ) -> c_int;
     pub fn nvlist_free(_: *mut nvlist_t);
     pub fn nvlist_lookup_pairs(_: *mut nvlist_t, _: c_int, ...) -> c_int;
     pub fn nvlist_print_json(_: *mut libc::FILE, _: *mut nvlist_t) -> c_int;
+}
+
+pub struct NvList(pub *mut nvlist_t);
+impl NvList {
+    /// Convert a buffer representing a packed `nvlist_t` into a searcable
+    /// `nvlist_t` (wrapped in `NvList` which will free it automatically).
+    pub fn from_buf(buf: &[u8]) -> anyhow::Result<Self> {
+        let mut nvl = std::ptr::null_mut();
+        let err =
+            unsafe { nvlist_unpack(buf.as_ptr().cast_mut().cast(), buf.len(), &raw mut nvl, 0) };
+        if err != 0 {
+            anyhow::bail!("Failed to unpack nvlist from buffer: {err}");
+        }
+        Ok(Self(nvl))
+    }
+
+    /// Convert this `nvlist_t` into JSON.
+    pub fn to_json(&self) -> anyhow::Result<Vec<u8>> {
+        use anyhow::Context;
+        use std::io::Error;
+
+        let mut json_buf_ptr = std::ptr::null_mut();
+        let mut json_buf_sz = 0;
+        let json_buf = unsafe { libc::open_memstream(&raw mut json_buf_ptr, &raw mut json_buf_sz) };
+        if json_buf.is_null() {
+            return Err(Error::last_os_error())
+                .context("Failed to get memstream to write nvlist as json");
+        }
+        unsafe {
+            nvlist_print_json(json_buf, self.0);
+        }
+        if unsafe { libc::fclose(json_buf) } != 0 {
+            return Err(Error::last_os_error()).context("Failed to close nvlist->json memstream");
+        }
+        if json_buf_ptr.is_null() || json_buf_sz == 0 {
+            anyhow::bail!("Failed to convert nvlist to json");
+        }
+        let json = Vec::from(unsafe {
+            std::slice::from_raw_parts(json_buf_ptr.cast::<u8>(), json_buf_sz)
+        });
+        unsafe {
+            libc::free(json_buf_ptr.cast());
+        }
+        Ok(json)
+    }
+}
+
+impl Drop for NvList {
+    fn drop(&mut self) {
+        unsafe {
+            nvlist_free(self.0);
+        }
+    }
 }
 
 pub enum kvm_t {}

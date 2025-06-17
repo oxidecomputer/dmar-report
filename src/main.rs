@@ -157,10 +157,17 @@ fn main() -> anyhow::Result<()> {
             .context("Failed to write out margins.json")?;
     }
 
-    // 6. Also write out the full set of umc data (including PHY data)
+    // 6. Also write out the full set of umc data (including PHY data) and decoder snapshot
     {
-        let mut raw_json = fs::File::create_new(out_path.join("raw.json"))?;
-        serde_json::to_writer(&mut raw_json, &chans)?;
+        let mut raw_json =
+            fs::File::create_new(out_path.join("raw.json")).context("Failed to create raw.json")?;
+        serde_json::to_writer(&mut raw_json, &chans).context("Failed to write raw umc data")?;
+
+        fs::write(
+            out_path.join("mc_decode_snapshot.json"),
+            umc.decode_snapshot()?,
+        )
+        .context("Failed to write decode snapshot")?;
     }
 
     // Finally `tar` everything up
