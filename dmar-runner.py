@@ -81,6 +81,20 @@ class Target:
         output_on_err(cmd)
 
     @retry(count=3, sleep=1)
+    def detach_console_proxy(self):
+        logging.info('Setting host console uart client to MGS on target %s',
+                     self.target)
+        cmd = [
+            'pfexec',
+            'humility',
+            '-t',
+            self.target,
+            'console-proxy',
+            'detach'
+        ]
+        output_on_err(cmd)
+
+    @retry(count=3, sleep=1)
     def uart_redirect(self, enable):
         logging.info('%s UART redirection on target %s',
                      "Enabling" if enable else "Disabling", self.target)
@@ -233,6 +247,8 @@ class Runner:
                     print("MBIST Interface Test")
                 elif post_code == "0xea00e325":
                     print("MBIST DataEye Test")
+                elif post_code == "0xee1000b0":
+                    print("AGESA complete")
 
             try:
                 self.target_mac = con_task.result(timeout=2)
@@ -245,8 +261,17 @@ class Runner:
             console.communicate("\r\n\r\n\x01\x18", timeout=10)
         except subprocess.TimeoutExpired:
             pass
+        # If for some reason picocom failed to exit, kill it
         console.kill()
+        # The host expects hardware flow control so without something on the
+        # other side properly signalling, it will just get stuck.
+        # To get around that, we disable the UART redirect letting the SP
+        # handle it.
         self.target.uart_redirect(False)
+        # We also make sure that the Host UART client is not
+        # humility (which will stop reading if the SP buffer is full) but
+        # rather MGS (which will discard if the SP buffer is full)
+        self.target.detach_console_proxy()
 
         # Serve the phase2 image
         self.serve_phase2()
