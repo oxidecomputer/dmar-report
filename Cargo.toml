@@ -2,5 +2,13 @@
 name = "dmar-report"
 version = "0.1.0"
 edition = "2024"
+license = "MPL-2.0"
 
 [dependencies]
+anyhow = "1.0.98"
+libc = "0.2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_with = "3.12.0"
+tempfile = "3"
+thiserror = "2"
