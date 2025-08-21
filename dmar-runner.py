@@ -190,6 +190,11 @@ class Runner:
         self.phase1 = phase1
         self.phase2 = phase2
 
+        efs_json = pathlib.Path(args.EFS_JSON)
+        if not efs_json.is_file():
+            logging.error("EFS json does not exist - %s", efs_json)
+            sys.exit(1)
+
         self.nic = args.interface
         if self.nic is None:
             cmd = 'ipadm show-addr -po ADDROBJ,TYPE | grep addrconf | head -1'
@@ -211,7 +216,7 @@ class Runner:
         logging.info("Serial: %s", self.serial)
 
         print("Creating boot image...")
-        self.create_boot_image(args.BOOT_JSON)
+        self.create_boot_image(efs_json)
 
         print("Writing image to target...")
         self.target.write_rom(self.boot_image)
@@ -403,7 +408,7 @@ if __name__ == '__main__':
                     target system and collect the results.")
 
     parser.add_argument('IMAGE_DIR', help="Helios Image Directory",)
-    parser.add_argument('BOOT_JSON', help="Boot Image Config")
+    parser.add_argument('EFS_JSON', help="Boot Image EFS Config")
     parser.add_argument('TARGET', help="Humility Target")
 
     parser.add_argument(
