@@ -24,8 +24,8 @@ def output_on_err(*args, **kwargs):
         err = cpe.stderr if 'encoding' in kwargs else cpe.stderr.decode(
             'utf-8')
         raise RuntimeError(
-            f"Command {cpe.cmd!r} returned non-zero exit code {cpe.returncode}:\
-            \n{err}"
+            f"Command {cpe.cmd!r} returned non-zero exit code {cpe.returncode}:"
+            f"\n{err}"
         ) from cpe
     return result
 
@@ -291,6 +291,16 @@ class Runner:
         wait_task = executor.submit(Runner.wait_for_target, self, pilot)
         try:
             self.target_ip = wait_task.result(timeout=10*60)
+            # The pilot command should not return normally and keep outputting
+            # to stdout. Make sure it hasn't otherwise failed.
+            if self.target_ip is None:
+                cmd = " ".join(pilot_cmd)
+                _, pilot_stderr = pilot.communicate(timeout=10*60)
+                raise RuntimeError(
+                    "Failed to discover target IP via pilot beacon - "
+                    f"(cmd={pilot_cmd}, exitcode={pilot.returncode}):\n"
+                    f"{pilot_stderr}"
+                )
         except concurrent.futures.TimeoutError:
             wait_task.cancel()
             pilot.terminate()
