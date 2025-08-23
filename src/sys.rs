@@ -162,6 +162,26 @@ impl mc_dram_mode_regs_t {
         unsafe { Box::from_raw(ptr) }
     }
 
+    /// Returns an iterator of the mode registers (as an iterator) per-die.
+    pub fn die_regs(&self) -> impl Iterator<Item = impl Iterator<Item = u8>> + Clone {
+        let ndies = usize::from(self.mdmr_ndies);
+        assert_eq!(
+            self.mdmr_moderegs.len(),
+            ndies * usize::from(self.mdmr_nregs)
+        );
+        let regs = self.mdmr_moderegs.iter().copied();
+        let mut die = 0;
+        std::iter::from_fn(move || {
+            if die < ndies {
+                let die_regs = regs.clone().skip(die).step_by(ndies);
+                die += 1;
+                Some(die_regs)
+            } else {
+                None
+            }
+        })
+    }
+
     /// Returns a slice representing the value of the requested mode register
     /// for all DRAMs, if present.
     pub fn get_regs(&self, reg: u8) -> &[u8] {
@@ -206,6 +226,9 @@ pub const SPD_KEY_MFG_MOD_SN: *const c_char = c"mfg.module-sn".as_ptr();
 pub const SPD_KEY_DRAM_WIDTH: *const c_char = c"dram.width".as_ptr();
 pub const SPD_KEY_DATA_WIDTH: *const c_char = c"channel.data-width".as_ptr();
 pub const SPD_KEY_ECC_WIDTH: *const c_char = c"channel.ecc-width".as_ptr();
+pub const SPD_KEY_NRANKS: *const c_char = c"channel.num-ranks".as_ptr();
+pub const SPD_KEY_PKG_SL: *const c_char = c"dram.package-sig-loading".as_ptr();
+pub const SPD_KEY_RANK_ASYM: *const c_char = c"dram.asymmetrical-ranks".as_ptr();
 
 pub const DATA_TYPE_UINT32: c_int = 6;
 pub const DATA_TYPE_STRING: c_int = 9;
@@ -222,6 +245,7 @@ unsafe extern "C" {
     ) -> c_int;
     pub fn nvlist_free(_: *mut nvlist_t);
     pub fn nvlist_lookup_pairs(_: *mut nvlist_t, _: c_int, ...) -> c_int;
+    pub fn nvlist_lookup_boolean(_: *mut nvlist_t, _: *const libc::c_char) -> c_int;
     pub fn nvlist_print_json(_: *mut libc::FILE, _: *mut nvlist_t) -> c_int;
 }
 

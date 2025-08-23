@@ -24,8 +24,8 @@ def output_on_err(*args, **kwargs):
         err = cpe.stderr if 'encoding' in kwargs else cpe.stderr.decode(
             'utf-8')
         raise RuntimeError(
-            f"Command {cpe.cmd!r} returned non-zero exit code {cpe.returncode}:\
-            \n{err}"
+            f"Command {cpe.cmd!r} returned non-zero exit code {cpe.returncode}:"
+            f"\n{err}"
         ) from cpe
     return result
 
@@ -190,6 +190,11 @@ class Runner:
         self.phase1 = phase1
         self.phase2 = phase2
 
+        efs_json = pathlib.Path(args.EFS_JSON)
+        if not efs_json.is_file():
+            logging.error("EFS json does not exist - %s", efs_json)
+            sys.exit(1)
+
         self.nic = args.interface
         if self.nic is None:
             cmd = 'ipadm show-addr -po ADDROBJ,TYPE | grep addrconf | head -1'
@@ -211,7 +216,7 @@ class Runner:
         logging.info("Serial: %s", self.serial)
 
         print("Creating boot image...")
-        self.create_boot_image(args.BOOT_JSON)
+        self.create_boot_image(efs_json)
 
         print("Writing image to target...")
         self.target.write_rom(self.boot_image)
@@ -286,6 +291,16 @@ class Runner:
         wait_task = executor.submit(Runner.wait_for_target, self, pilot)
         try:
             self.target_ip = wait_task.result(timeout=10*60)
+            # The pilot command should not return normally and keep outputting
+            # to stdout. Make sure it hasn't otherwise failed.
+            if self.target_ip is None:
+                cmd = " ".join(pilot_cmd)
+                _, pilot_stderr = pilot.communicate(timeout=10*60)
+                raise RuntimeError(
+                    "Failed to discover target IP via pilot beacon - "
+                    f"(cmd={pilot_cmd}, exitcode={pilot.returncode}):\n"
+                    f"{pilot_stderr}"
+                )
         except concurrent.futures.TimeoutError:
             wait_task.cancel()
             pilot.terminate()
@@ -403,7 +418,7 @@ if __name__ == '__main__':
                     target system and collect the results.")
 
     parser.add_argument('IMAGE_DIR', help="Helios Image Directory",)
-    parser.add_argument('BOOT_JSON', help="Boot Image Config")
+    parser.add_argument('EFS_JSON', help="Boot Image EFS Config")
     parser.add_argument('TARGET', help="Humility Target")
 
     parser.add_argument(
