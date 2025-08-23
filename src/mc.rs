@@ -30,6 +30,7 @@ pub struct DimmInfo {
     dram_width: usize,
     data_width: usize,
     ecc_width: usize,
+    num_ranks: usize,
 }
 
 impl Default for DimmInfo {
@@ -42,6 +43,7 @@ impl Default for DimmInfo {
             dram_width: 4,
             data_width: 32,
             ecc_width: 8,
+            num_ranks: 1,
         }
     }
 }
@@ -277,6 +279,8 @@ fn parse_spd(spd: &[u8]) -> anyhow::Result<(DimmInfo, Vec<u8>)> {
     let mut dram_width = 0u32;
     let mut data_width = 0u32;
     let mut ecc_width = 0u32;
+    let mut num_ranks = 0u32;
+    let mut pkg_sl = 0u32;
 
     let ret = unsafe {
         sys::nvlist_lookup_pairs(
@@ -303,11 +307,22 @@ fn parse_spd(spd: &[u8]) -> anyhow::Result<(DimmInfo, Vec<u8>)> {
             sys::SPD_KEY_ECC_WIDTH,
             sys::DATA_TYPE_UINT32,
             &raw mut ecc_width,
+            sys::SPD_KEY_PKG_SL,
+            sys::DATA_TYPE_UINT32,
+            &raw mut pkg_sl,
+            sys::SPD_KEY_NRANKS,
+            sys::DATA_TYPE_UINT32,
+            &raw mut num_ranks,
             std::ptr::null::<libc::c_char>(),
         )
     };
     if ret != 0 {
         anyhow::bail!("Failed to lookup data from SPD: {ret}");
+    }
+
+    let asym = unsafe { sys::nvlist_lookup_boolean(spd_nvl.0, sys::SPD_KEY_RANK_ASYM) } == 0;
+    if pkg_sl != 0 || asym {
+        anyhow::bail!("Unsupported DIMM configuration: pkg_sl={pkg_sl}, asym={asym}");
     }
 
     let convert_str = |s| {
@@ -330,6 +345,7 @@ fn parse_spd(spd: &[u8]) -> anyhow::Result<(DimmInfo, Vec<u8>)> {
         dram_width: dram_width as usize,
         data_width: data_width as usize,
         ecc_width: ecc_width as usize,
+        num_ranks: num_ranks as usize,
     };
 
     Ok((info, spd_json))
@@ -616,13 +632,27 @@ impl ZenUmc {
                 DataScope::SubChannel(c, d, r, sc)
             )
         })?;
-        // DRAM Mode Register 10 contains the DRAM side VrefDQ values.
-        let Some(write_vrefs) = sub_chan.mode_regs.as_ref().map(|mr| mr.get_regs(10)) else {
+
+        let Some(mrs) = sub_chan.mode_regs.as_ref() else {
             anyhow::bail!(
-                "Failed to get trained Tx Vrefs for {}",
+                "Mode Registers missing for {}",
                 DataScope::SubChannel(c, d, r, sc)
             )
         };
+
+        // The mode register data may include more DRAM dies than actually present. We check to see
+        // if a given die then has all mode registers zeroed and thus should be skipped for purposes
+        // of finding the min/max write Vref values below.
+        // See comments in `ZenUmc::fill_ranks()`.
+        let skip_dies = mrs.die_regs().map(|mut regs| regs.all(|reg| reg == 0));
+
+        // DRAM Mode Register 10 contains the DRAM side VrefDQ values.
+        let write_vrefs = mrs
+            .get_regs(10)
+            .into_iter()
+            .copied()
+            .zip(skip_dies)
+            .filter_map(|(vref, skip)| if skip { None } else { Some(vref) });
 
         // The summarized margin results are relative to the min/max trained Vref across ALL lanes.
         fn minmax_vref(vrefs: impl Iterator<Item = u8>) -> (u8, u8) {
@@ -631,7 +661,7 @@ impl ZenUmc {
             })
         }
         let (read_min, read_max) = minmax_vref(read_vrefs.clone().map(|v| v.0));
-        let (write_min, write_max) = minmax_vref(write_vrefs.iter().copied());
+        let (write_min, write_max) = minmax_vref(write_vrefs);
 
         let data_eyes = sub_chan
             .margins
@@ -713,17 +743,26 @@ impl ZenUmc {
 
                 match self.get_mode_regs(c, d, r, sc) {
                     Ok(mr) => {
-                        // The number of DRAMs should match
+                        // We can use the SPD provided info to determine the number of DRAM dies
+                        // which should be present. A fairly straight forward (ignoring the
+                        // unsupported 3DS and asymmetric ranks cases) calculation:
+                        // # of DRAM dies = bits per sub-channel (data + ecc) / DRAM device width
+                        // One then might expect this to match the number of DRAM dies as reported
+                        // in the Mode Registers blob, but that value seems to be a maximum, e.g.,
+                        // on a 1DPC system supporting both single and dual rank DIMMs but populated
+                        // with a 1Rx8 DDR5 RDIMM EC8, we'd calculate `ndram_dies` as (32+8)/8 = 5.
+                        // But in fact, `mdmr_ndies` would be 10 with data only populated for the
+                        // even entries.
                         let bit_width = dimm.info.data_width + dimm.info.ecc_width;
-                        let ndrams = bit_width / dimm.info.dram_width;
-                        if usize::from(mr.mdmr_ndies) != ndrams {
-                            anyhow::bail!(
-                                "Unexpected number of DRAMs in Mode Register data for {}: {} vs {}",
-                                DataScope::SubChannel(c, d, r, sc),
-                                mr.mdmr_ndies,
-                                ndrams,
-                            );
-                        }
+                        let ndram_dies = bit_width / dimm.info.dram_width;
+                        anyhow::ensure!(
+                            ndram_dies <= usize::from(mr.mdmr_ndies),
+                            "Unexpected number of DRAM dies in Mode Register data for {}: {} vs {}",
+                            DataScope::SubChannel(c, d, r, sc),
+                            mr.mdmr_ndies,
+                            ndram_dies,
+                        );
+
                         sub_chan.mode_regs = Some(mr);
                     }
                     Err(e) if e.is::<NoData>() => {}
