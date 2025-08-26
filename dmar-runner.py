@@ -247,13 +247,13 @@ class Runner:
                 logging.info("POST code: %s", post_code)
                 last_post_code = post_code
                 if post_code == "0xea00e342":
-                    print("PMU Training Complete")
+                    print(f"PMU Training Complete ({elapsed})")
                 elif post_code == "0xea00e324":
-                    print("MBIST Interface Test")
+                    print(f"MBIST Interface Test ({elapsed})")
                 elif post_code == "0xea00e325":
-                    print("MBIST DataEye Test")
+                    print(f"MBIST DataEye Test ({elapsed})")
                 elif post_code == "0xee1000b0":
-                    print("AGESA complete")
+                    print(f"AGESA complete ({elapsed})")
 
             try:
                 self.target_mac = con_task.result(timeout=2)
@@ -315,6 +315,8 @@ class Runner:
         self.copy_from_target(results, '.')
 
         print("DRAM Margining Test Results:", pathlib.Path(results).name)
+
+        print("Elapsed from power on: ", datetime.now() - self.power_on_time)
 
         self.target.uart_redirect(True)
 
