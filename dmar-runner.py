@@ -230,6 +230,7 @@ class Runner:
 
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         con_task = executor.submit(Runner.monitor_console, self, console)
+        last_note = time.time()
         while True:
             elapsed = datetime.now() - self.power_on_time
             if elapsed > timedelta(hours=2):
@@ -259,6 +260,10 @@ class Runner:
                 self.target_mac = con_task.result(timeout=2)
                 break
             except concurrent.futures.TimeoutError:
+                now_note = time.time()
+                if now_note - last_note >= 15:
+                    print(f"Waiting for phase 2 request... elapsed {datetime.now() - self.power_on_time}")
+                    last_note = now_note
                 continue
 
         # We don't need the console anymore, send Ctrl-A Ctrl-X to exit
@@ -279,12 +284,14 @@ class Runner:
         self.target.detach_console_proxy()
 
         # Serve the phase2 image
+        logging.info("Serving phase 2 image %s to %s", self.phase2, self.target_mac)
         self.serve_phase2()
         phase2_time = datetime.now()
 
         # Now wait for the target to come up and announce itself
         print("Waiting for", self.serial, "to boot...")
         pilot_cmd = ['pilot', 'host', '-i', self.nic, 'stream']
+        logging.info('pilot command: %s', ' '.join(pilot_cmd))
         pilot = subprocess.Popen(pilot_cmd, bufsize=1, text=True,
                                  encoding='utf-8', stdin=subprocess.DEVNULL,
                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -303,6 +310,11 @@ class Runner:
                 )
         except concurrent.futures.TimeoutError:
             wait_task.cancel()
+            try:
+                _, pilot_stderr = pilot.communicate(timeout=5)
+                logging.error('pilot timeout; stderr: %s', pilot_stderr.strip() if pilot_stderr else '')
+            except Exception:
+                pass
             pilot.terminate()
             executor.shutdown()
             raise RuntimeError("Timed out waiting for pilot beacon")
@@ -329,6 +341,8 @@ class Runner:
             raise RuntimeError("No hold on {}".format(self.inventron_env))
 
     def run_on_target(self, cmd):
+        if logging.getLogger().isEnabledFor(logging.INFO):
+            logging.info('on-target: %s', cmd)
         ssh_cmd = [
             'ssh',
             '-oStrictHostKeyChecking=no',
@@ -339,6 +353,8 @@ class Runner:
         return output_on_err(ssh_cmd, encoding='utf-8').stdout
 
     def copy_from_target(self, src, dst):
+        if logging.getLogger().isEnabledFor(logging.INFO):
+            logging.info('from-target: %s -> %s', src, dst)
         scp_cmd = [
             'scp',
             '-oStrictHostKeyChecking=no',
@@ -350,6 +366,8 @@ class Runner:
         output_on_err(scp_cmd)
 
     def copy_to_target(self, src, dst):
+        if logging.getLogger().isEnabledFor(logging.INFO):
+            logging.info('to-target: %s -> %s', src, dst)
         scp_cmd = [
             'scp',
             '-oStrictHostKeyChecking=no',
@@ -380,8 +398,6 @@ class Runner:
                 return mac.group()
 
     def serve_phase2(self):
-        logging.info("Serving phase 2 image %s to %s", self.phase2,
-                     self.target_mac)
         cmd = [
             'pfexec',
             self.tools['bootserver'],
@@ -449,3 +465,4 @@ if __name__ == '__main__':
         logging.basicConfig(level=logging.INFO)
 
     Runner().main(args)
+
