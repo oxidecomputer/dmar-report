@@ -751,7 +751,47 @@ def main():
         # extra context
         print(f"CWD:          {Path.cwd()}")
         print(f"Script dir:   {Path(__file__).resolve().parent}")
-        sys.exit(0)
+
+        # Validate paths exist
+        print("\nPath validation:")
+        all_valid = True
+
+        # Check directories
+        for k in ("image_dir", "fw_path", "output_root"):
+            path_str = cfg.get(k)
+            if path_str:
+                p = Path(path_str)
+                exists = p.exists()
+                is_dir = p.is_dir() if exists else False
+                status = "✓ OK" if (exists and is_dir) else "✗ MISSING" if not exists else "✗ NOT A DIR"
+                print(f"  {k}: {status}")
+                if not (exists and is_dir):
+                    all_valid = False
+            else:
+                print(f"  {k}: ✗ NOT SET")
+                all_valid = False
+
+        # Check binary files
+        for k in ("bootserver_path", "dmar_report_path", "image_builder_path", "dmar_runner_path"):
+            path_str = cfg.get(k)
+            if path_str:
+                p = Path(path_str)
+                exists = p.exists()
+                is_file = p.is_file() if exists else False
+                status = "✓ OK" if (exists and is_file) else "✗ MISSING" if not exists else "✗ NOT A FILE"
+                print(f"  {k}: {status}")
+                if not (exists and is_file):
+                    all_valid = False
+            else:
+                print(f"  {k}: ✗ NOT SET")
+                all_valid = False
+
+        if all_valid:
+            print("\n✓ All paths validated successfully")
+            sys.exit(0)
+        else:
+            print("\n✗ Some paths are invalid or missing")
+            sys.exit(1)
 
     run_start = datetime.now()
 
