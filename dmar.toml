@@ -2,10 +2,13 @@
 image_dir  = "/staff/dock/racktest/os/20250924-1735"
 #image_dir  = "/staff/dock/racktest/os/20250716-1417"
 fw_path    = "/staff/tom/git/amd-firmware/BRH/1.0.0.5"
-# tools_path defaults to the directory containing dmar-runner.py if omitted
-tools_path = "/staff/tom/git/hardware-cosmo/charz/dram-mbist/dmar-runs"
-# runner_path defaults to dmar-runner.py next to dmar.py if omitted
-runner_path = "/staff/tom/git/hardware-cosmo/charz/dram-mbist/dmar-runs/dmar-runner.py"
+# Individual tool paths (full paths to binaries)
+bootserver_path = "/staff/tom/git/boot-image-tools/target/release/bootserver"
+dmar_report_path = "/staff/tom/git/dmar-report/target/release/dmar-report"
+image_builder_path = "/staff/tom/git/boot-image-tools/target/release/amd-host-image-builder"
+# dmar_runner_path defaults to dmar-runner.py next to dmar.py if omitted
+# default dmar.toml is assumed to be in the same directory as dmar_runner_path
+dmar_runner_path = "/staff/tom/git/dmar-report/dmar-runner.py"
 output_root = "."   # where CSV + log will be written by default
 
 # pass / fail criteria for eye characteristics

@@ -167,13 +167,19 @@ class Runner:
             sys.exit(1)
         self.fw_path = args.fw_path
 
-        tools_path = pathlib.Path(args.tools_path)
-        for tool in TOOLS:
-            tool_path = tools_path / tool
+        # Map individual tool paths
+        tool_paths = {
+            'bootserver': args.bootserver_path,
+            'dmar-report': args.dmar_report_path,
+            'amd-host-image-builder': args.image_builder_path,
+        }
+
+        for tool_name, tool_path_str in tool_paths.items():
+            tool_path = pathlib.Path(tool_path_str)
             if not tool_path.exists():
-                logging.error("%s tool not found in %s", tool, tools_path)
+                logging.error("%s tool not found at %s", tool_name, tool_path)
                 sys.exit(1)
-            self.tools[tool] = tool_path
+            self.tools[tool_name] = tool_path
 
         image_dir = pathlib.Path(args.IMAGE_DIR)
         phase1 = image_dir / "phbl/x86_64-oxide-none-elf/release/phbl"
@@ -445,9 +451,17 @@ if __name__ == '__main__':
         default="{}/../amd-firmware/BRH/1.0.0.5".format(script_dir),
         help="Path to required firmware blobs")
     parser.add_argument(
-        '--tools-path',
-        default=script_dir,
-        help="Path to required tools ({})".format(', '.join(TOOLS)))
+        '--bootserver-path',
+        required=True,
+        help="Path to bootserver binary")
+    parser.add_argument(
+        '--dmar-report-path',
+        required=True,
+        help="Path to dmar-report binary")
+    parser.add_argument(
+        '--image-builder-path',
+        required=True,
+        help="Path to amd-host-image-builder binary")
     parser.add_argument(
         '-i', '--interface',
         help="Network interface providing connectivity to target")

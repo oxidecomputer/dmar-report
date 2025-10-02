@@ -52,9 +52,12 @@ _cleanup_state = {'target': None, 'log_path': None}
 _HARDCODED_DEFAULTS = {
     "image_dir": "/staff/dock/racktest/os/20250924-1735",
     "fw_path": "/staff/tom/git/amd-firmware/BRH/1.0.0.5",
-    # tools_path and runner_path default to the runner's directory if not set
-    "tools_path": None,
-    "runner_path": None,
+    # Individual tool paths (full paths to binaries)
+    "bootserver_path": None,
+    "dmar_report_path": None,
+    "image_builder_path": None,
+    # dmar_runner_path defaults to dmar-runner.py next to dmar.py if not set
+    "dmar_runner_path": None,
     # where to place CSV/log by default (current working directory)
     "output_root": ".",
     # pass/fail limits (can be overridden in dmar.toml)
@@ -70,8 +73,10 @@ _HARDCODED_DEFAULTS = {
 _ENV_MAP = {
     "image_dir": "DMAR_IMAGE_DIR",
     "fw_path": "DMAR_FW_PATH",
-    "tools_path": "DMAR_TOOLS_DIR",
-    "runner_path": "DMAR_RUNNER_PATH",
+    "bootserver_path": "DMAR_BOOTSERVER_PATH",
+    "dmar_report_path": "DMAR_DMAR_REPORT_PATH",
+    "image_builder_path": "DMAR_IMAGE_BUILDER_PATH",
+    "dmar_runner_path": "DMAR_RUNNER_PATH",
     "output_root": "DMAR_OUTPUT_ROOT",
     "eye_height_read_limit": "DMAR_EYE_HEIGHT_READ_LIMIT",
     "eye_height_write_limit": "DMAR_EYE_HEIGHT_WRITE_LIMIT",
@@ -223,8 +228,10 @@ def _resolve_config(inventron: str, cli: argparse.Namespace) -> Tuple[dict, Dict
     base_cfg = {
         "image_dir": toml_cfg.get("image_dir"),
         "fw_path": toml_cfg.get("fw_path"),
-        "tools_path": toml_cfg.get("tools_path"),
-        "runner_path": toml_cfg.get("runner_path"),
+        "bootserver_path": toml_cfg.get("bootserver_path"),
+        "dmar_report_path": toml_cfg.get("dmar_report_path"),
+        "image_builder_path": toml_cfg.get("image_builder_path"),
+        "dmar_runner_path": toml_cfg.get("dmar_runner_path"),
         "output_root": toml_cfg.get("output_root"),
         "eye_height_read_limit": toml_cfg.get("eye_height_read_limit"),
         "eye_height_write_limit": toml_cfg.get("eye_height_write_limit"),
@@ -241,8 +248,10 @@ def _resolve_config(inventron: str, cli: argparse.Namespace) -> Tuple[dict, Dict
     cfg = _overlay(cfg, {
         "image_dir": profile_cfg.get("image_dir"),
         "fw_path": profile_cfg.get("fw_path"),
-        "tools_path": profile_cfg.get("tools_path"),
-        "runner_path": profile_cfg.get("runner_path"),
+        "bootserver_path": profile_cfg.get("bootserver_path"),
+        "dmar_report_path": profile_cfg.get("dmar_report_path"),
+        "image_builder_path": profile_cfg.get("image_builder_path"),
+        "dmar_runner_path": profile_cfg.get("dmar_runner_path"),
         "output_root": profile_cfg.get("output_root"),
         "eye_height_read_limit": profile_cfg.get("eye_height_read_limit"),
         "eye_height_write_limit": profile_cfg.get("eye_height_write_limit"),
@@ -261,19 +270,20 @@ def _resolve_config(inventron: str, cli: argparse.Namespace) -> Tuple[dict, Dict
     cli_overlay = {
         "image_dir": cli.image_dir,
         "fw_path": cli.fw_path,
-        "tools_path": cli.tools_path,
-        "runner_path": cli.runner_path,
+        "bootserver_path": cli.bootserver_path,
+        "dmar_report_path": cli.dmar_report_path,
+        "image_builder_path": cli.image_builder_path,
+        "dmar_runner_path": cli.dmar_runner_path,
         "output_root": cli.output_root,
     }
     cfg = _overlay(cfg, cli_overlay)
 
     script_dir = Path(__file__).resolve().parent
-    if not cfg.get("runner_path"):
-        cfg["runner_path"] = str(script_dir / "dmar-runner.py")
-    if not cfg.get("tools_path"):
-        cfg["tools_path"] = str(Path(cfg["runner_path"]).resolve().parent)
+    if not cfg.get("dmar_runner_path"):
+        cfg["dmar_runner_path"] = str(script_dir / "dmar-runner.py")
 
-    for k in ("image_dir", "fw_path", "tools_path", "output_root", "runner_path"):
+    for k in ("image_dir", "fw_path", "bootserver_path", "dmar_report_path",
+              "image_builder_path", "output_root", "dmar_runner_path"):
         v = cfg.get(k)
         if isinstance(v, str):
             cfg[k] = str(Path(v).expanduser())
@@ -474,7 +484,8 @@ def resolve_runner_path(path_str: str) -> Path:
     return cand
 
 def run_runner_and_capture(image_dir: str, boot_json: str, inventron: str,
-                           fw_path: str, tools_path: str, runner_path: str,
+                           fw_path: str, bootserver_path: str, dmar_report_path: str,
+                           image_builder_path: str, dmar_runner_path: str,
                            log_path: Path, verbose: bool):
     """
     Spawn dmar-runner.py and tee its output to console + log.
@@ -482,14 +493,16 @@ def run_runner_and_capture(image_dir: str, boot_json: str, inventron: str,
     timings keys: qspi_start, qspi_end, boot_start, boot_to_x86, phase2_served,
                   boot_complete, report_start, report_done, run_start, run_end.
     """
-    runner_file = resolve_runner_path(runner_path)
+    runner_file = resolve_runner_path(dmar_runner_path)
 
     cmd = [
         sys.executable, "-u", str(runner_file),
         image_dir, boot_json, f"{inventron}-sp",
         "-e", inventron,
         "--fw-path", fw_path,
-        "--tools-path", tools_path,
+        "--bootserver-path", bootserver_path,
+        "--dmar-report-path", dmar_report_path,
+        "--image-builder-path", image_builder_path,
     ]
     if verbose:
         cmd.append("-v")
@@ -603,8 +616,10 @@ def _build_parser() -> argparse.ArgumentParser:
     ap.add_argument("brd_sn", help="Board serial number (e.g., BRM13250005)")
     ap.add_argument("--image-dir", help="(override) Image directory")
     ap.add_argument("--fw-path", help="(override) Firmware blobs path")
-    ap.add_argument("--tools-path", help="(override) Directory containing required tools")
-    ap.add_argument("--runner-path", help="(override) Path to dmar-runner.py (file or directory)")
+    ap.add_argument("--bootserver-path", help="(override) Path to bootserver binary")
+    ap.add_argument("--dmar-report-path", help="(override) Path to dmar-report binary")
+    ap.add_argument("--image-builder-path", help="(override) Path to amd-host-image-builder binary")
+    ap.add_argument("--dmar-runner-path", help="(override) Path to dmar-runner.py (file or directory)")
     ap.add_argument("--output-root", help="(override) Root directory for CSV and log")
     ap.add_argument("--outcsv", help="Output CSV path (default uses output_root/brd_sn/date)")
     ap.add_argument("--profile", help="Profile name from dmar.toml [profiles.<name>] (defaults to INVENTRON)")
@@ -722,7 +737,8 @@ def main():
 
     if args.print_config:
         print("Resolved configuration:")
-        for k in ("image_dir", "fw_path", "tools_path", "runner_path", "output_root"):
+        for k in ("image_dir", "fw_path", "bootserver_path", "dmar_report_path",
+                  "image_builder_path", "dmar_runner_path", "output_root"):
             print(f"  {k}: {cfg.get(k)}")
         print(f"  eye_height_read_limit:  {cfg.get('eye_height_read_limit')}")
         print(f"  eye_height_write_limit: {cfg.get('eye_height_write_limit')}")
@@ -763,8 +779,10 @@ def main():
         boot_json=args.boot_json,
         inventron=args.inventron,
         fw_path=cfg["fw_path"],
-        tools_path=cfg["tools_path"],
-        runner_path=cfg["runner_path"],
+        bootserver_path=cfg["bootserver_path"],
+        dmar_report_path=cfg["dmar_report_path"],
+        image_builder_path=cfg["image_builder_path"],
+        dmar_runner_path=cfg["dmar_runner_path"],
         log_path=log_path,
         verbose=args.verbose,
     )
