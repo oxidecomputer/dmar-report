@@ -13,12 +13,17 @@ CLI:
 Options:
     --outcsv FILE          (default: <output_root>/<BRD_SN>-run-<YYYYmmdd-%H%M%S>.csv)
     --profile NAME         (overlay settings from [profiles.NAME] in dmar.toml; defaults to INVENTRON_NAME)
+    --toml FILE            (path to TOML config file; overrides auto-discovery and DMAR_CONFIG)
     --force                overwrite existing CSV
     --print-config         dump resolved config and exit
     -v/--verbose
 
 Config precedence (highest -> lowest):
     CLI flags > env vars > TOML config > hardcoded defaults
+
+TOML file discovery (highest -> lowest):
+    --toml CLI argument > DMAR_CONFIG env var > ./dmar.toml > <script_dir>/dmar.toml >
+    <git_root>/dmar.toml > ~/.config/dmar/config.toml > /etc/dmar/config.toml
 """
 
 from __future__ import annotations
@@ -28,12 +33,17 @@ import csv
 import json
 import os
 import re
+import signal
 import sys
 import tarfile
 import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Tuple, Dict, Any
+
+# Global cleanup state
+_CLEANUP_DONE = False
+_cleanup_state = {'target': None, 'log_path': None}
 
 # ----------------------------
 # Config resolution
@@ -77,7 +87,7 @@ def _parse_env_value(key: str, val: Optional[str]):
     if key == "expected_dimms":
         try:
             return int(val)
-        except Exception:
+        except (ValueError, TypeError):
             return None
     if key in (
         "eye_height_read_limit",
@@ -87,15 +97,19 @@ def _parse_env_value(key: str, val: Optional[str]):
     ):
         try:
             return float(val)
-        except Exception:
+        except (ValueError, TypeError):
             return None
     if key == "expected_slots":
         parts = [p.strip() for p in val.split(",") if p.strip()]
         return parts or None
     return val
 
-def _load_toml_config() -> Tuple[dict, Optional[Path]]:
-    """Search for a TOML config and return (dict, source_path)."""
+def _load_toml_config(explicit_path: Optional[str] = None) -> Tuple[dict, Optional[Path]]:
+    """Search for a TOML config and return (dict, source_path).
+
+    Args:
+        explicit_path: Path from --toml CLI argument (highest priority)
+    """
     # import shim
     _have_loader = False
     def _toml_load(_fh):
@@ -122,7 +136,16 @@ def _load_toml_config() -> Tuple[dict, Optional[Path]]:
 
     candidates: list[Path] = []
 
-    # Highest priority: explicit env override
+    # Highest priority: explicit CLI argument (--toml)
+    if explicit_path:
+        p = Path(explicit_path).expanduser().resolve()
+        if not p.is_file():
+            raise FileNotFoundError(f"Specified TOML config not found: {explicit_path}")
+        candidates.append(p)
+        if debug:
+            print(f"DMAR_DEBUG: Using explicit --toml path: {p}", file=sys.stderr)
+
+    # Second priority: explicit env override (DMAR_CONFIG)
     env_cfg = os.environ.get("DMAR_CONFIG")
     if env_cfg:
         p = Path(env_cfg).expanduser()
@@ -196,7 +219,7 @@ def _overlay(dst: dict, src: dict | None) -> dict:
 def _resolve_config(inventron: str, cli: argparse.Namespace) -> Tuple[dict, Dict[str, Any]]:
     cfg = dict(_HARDCODED_DEFAULTS)
 
-    toml_cfg, cfg_source = _load_toml_config()
+    toml_cfg, cfg_source = _load_toml_config(cli.toml if hasattr(cli, 'toml') else None)
     base_cfg = {
         "image_dir": toml_cfg.get("image_dir"),
         "fw_path": toml_cfg.get("fw_path"),
@@ -288,14 +311,14 @@ def _find_json_in_tar(tarfilename: str, json_basename: str):
 def _safe_float(x):
     try:
         return float(x)
-    except Exception:
+    except (ValueError, TypeError):
         return None
 
 def _fmt4(x):
     """Format as float with 4 decimals; keep empty if missing."""
     try:
         return f"{float(x):.4f}"
-    except Exception:
+    except (ValueError, TypeError):
         return "" if x in (None, "") else str(x)
 
 def _write_csv_from_json(margins, dimms, output_path: Path, brd_sn: Optional[str], limits: dict):
@@ -585,6 +608,7 @@ def _build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--output-root", help="(override) Root directory for CSV and log")
     ap.add_argument("--outcsv", help="Output CSV path (default uses output_root/brd_sn/date)")
     ap.add_argument("--profile", help="Profile name from dmar.toml [profiles.<name>] (defaults to INVENTRON)")
+    ap.add_argument("--toml", help="Path to TOML config file (overrides auto-discovery and DMAR_CONFIG)")
     ap.add_argument("--force", action="store_true", help="Overwrite existing CSV")
     ap.add_argument("--print-config", action="store_true", help="Print resolved config and exit")
     ap.add_argument("-v", "--verbose", action="store_true")
@@ -592,30 +616,104 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def cleanup_target(target: str, log_path: Path):
-    """Restore flash device to Flash0 and clear boot startup options on the target."""
+    """Restore flash device to Flash0, clear boot startup options, and reset console UART redirect."""
+    global _CLEANUP_DONE
+
+    if _CLEANUP_DONE:
+        return  # Cleanup already executed, skip to prevent double-execution
+
+    _CLEANUP_DONE = True
+
+    # Ensure log directory exists before writing
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+    except (OSError, PermissionError):
+        pass  # Continue cleanup even if log directory creation fails
+
     cmds = [
         ['pfexec', 'humility', '-t', target, 'hiffy', '-c', 'HostFlash.set_dev', '-a', 'dev=Flash0'],
         ['pfexec', 'humility', '-t', target, 'hiffy', '-c', 'ControlPlaneAgent.set_startup_options', '-a', 'startup_options=0x0'],
+        ['pfexec', 'humility', '-t', target, 'hiffy', '-c', 'FmcDemo.poke32', '-a', 'addr=0x60000700,value=0x0'],
     ]
-    with log_path.open("a") as lf:
-        lf.write("\n==== Cleanup ====\n")
+    try:
+        with log_path.open("a") as lf:
+            lf.write("\n==== Cleanup ====\n")
+    except (OSError, IOError):
+        pass  # Continue cleanup even if logging fails
     for cmd in cmds:
         try:
             res = subprocess.run(cmd, check=True, capture_output=True, text=True)
-            with log_path.open("a") as lf:
-                lf.write(f"$ {' '.join(cmd)}\n")
-                if res.stdout:
-                    lf.write(res.stdout)
-                if res.stderr:
-                    lf.write(res.stderr)
+            try:
+                with log_path.open("a") as lf:
+                    lf.write(f"$ {' '.join(cmd)}\n")
+                    if res.stdout:
+                        lf.write(res.stdout)
+                    if res.stderr:
+                        lf.write(res.stderr)
+            except (OSError, IOError):
+                pass  # Continue cleanup even if logging fails
         except subprocess.CalledProcessError as e:
-            with log_path.open("a") as lf:
-                lf.write(f"$ {' '.join(cmd)}\n")
-                lf.write(f"ERROR: exit {e.returncode}\n")
-                if e.stdout:
-                    lf.write(e.stdout)
-                if e.stderr:
-                    lf.write(e.stderr)
+            # Warn user about cleanup failure - hardware may be in unexpected state
+            error_msg = f"WARNING: Cleanup command failed (exit {e.returncode}): {' '.join(cmd)}"
+            print(error_msg, file=sys.stderr)
+            if e.stderr:
+                print(f"  Error output: {e.stderr.strip()}", file=sys.stderr)
+
+            try:
+                with log_path.open("a") as lf:
+                    lf.write(f"$ {' '.join(cmd)}\n")
+                    lf.write(f"ERROR: exit {e.returncode}\n")
+                    if e.stdout:
+                        lf.write(e.stdout)
+                    if e.stderr:
+                        lf.write(e.stderr)
+            except (OSError, IOError):
+                pass  # Continue cleanup even if logging fails
+
+
+def signal_handler(signum, frame):
+    """Handle SIGINT and SIGTERM to ensure cleanup happens on interrupt."""
+    print(f"\nReceived signal {signum}, cleaning up...", file=sys.stderr)
+
+    if _cleanup_state['target'] and _cleanup_state['log_path']:
+        try:
+            cleanup_target(_cleanup_state['target'], _cleanup_state['log_path'])
+        except (OSError, subprocess.SubprocessError) as e:
+            print(f"WARNING: Cleanup failed during interrupt: {e}", file=sys.stderr)
+            print("Hardware may be in unexpected state - manual cleanup may be required", file=sys.stderr)
+
+    sys.exit(128 + signum)
+
+
+def clean_then_exit(exit_code: int, target: str, log_path: Path, msg: Optional[str] = None):
+    """
+    Perform cleanup routine and exit with specified code.
+
+    Args:
+        exit_code: Exit code to return
+        target: Target name (e.g., 'mb-3-sp')
+        log_path: Path to log file for cleanup logging
+        msg: Optional message to print before cleanup
+    """
+    if msg:
+        print(msg, file=sys.stderr)
+
+    # Ensure log directory exists before cleanup
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        cleanup_target(target, log_path)
+    except (OSError, subprocess.SubprocessError) as e:
+        error_msg = f"\nWarning: cleanup failed: {e}\n"
+        print(error_msg.strip(), file=sys.stderr)
+        # Try to log to file if possible
+        try:
+            if log_path.parent.exists():
+                with log_path.open("a") as lf:
+                    lf.write(error_msg)
+        except (OSError, IOError):
+            pass  # Can't log to file, already printed to stderr
+
+    sys.exit(exit_code)
 
 def main():
     args = _build_parser().parse_args()
@@ -652,6 +750,14 @@ def main():
     timestamp = run_start.strftime("%Y%m%d.%H%M%S")
     log_path  = out_dir / f"dmar.{args.brd_sn}.{timestamp}.log"
 
+    # Set cleanup state before registering signal handlers to avoid race condition
+    _cleanup_state['target'] = f"{args.inventron}-sp"
+    _cleanup_state['log_path'] = log_path
+
+    # Register signal handlers
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
     code, tar_path, timings = run_runner_and_capture(
         image_dir=cfg["image_dir"],
         boot_json=args.boot_json,
@@ -664,20 +770,22 @@ def main():
     )
 
     if code != 0:
-        print(f"Runner failed (exit {code}). See {log_path}", file=sys.stderr)
-        sys.exit(code)
+        clean_then_exit(code, f"{args.inventron}-sp", log_path, f"Runner failed (exit {code}). See {log_path}")
 
     if tar_path is None or not tar_path.exists():
         candidates = sorted(Path(".").glob("*.tar"), key=lambda p: p.stat().st_mtime, reverse=True)
         tar_path = candidates[0] if candidates else None
 
     if tar_path is None or not tar_path.exists():
-        print("Error: Results .tar not found. Check the log for the results line.", file=sys.stderr)
-        sys.exit(2)
+        clean_then_exit(2, f"{args.inventron}-sp", log_path, "Error: Results .tar not found. Check the log for the results line.")
 
     if out_csv.exists() and not args.force:
-        print(f"Error: CSV '{out_csv}' exists. Use --force to overwrite.", file=sys.stderr)
-        sys.exit(3)
+        # Resolve naming conflict by appending timestamp
+        stem = out_csv.stem
+        suffix = out_csv.suffix
+        conflict_ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+        out_csv = out_csv.parent / f"{stem}_{conflict_ts}{suffix}"
+        print(f"Warning: CSV exists, writing to {out_csv} instead", file=sys.stderr)
 
     limits = {
         "eye_height_read_limit": float(cfg["eye_height_read_limit"]),
@@ -689,8 +797,7 @@ def main():
     try:
         dimm_list = csv_from_tar(tar_path, out_csv, args.brd_sn, limits)
     except Exception as e:
-        print(f"CSV conversion failed: {e}", file=sys.stderr)
-        sys.exit(4)
+        clean_then_exit(4, f"{args.inventron}-sp", log_path, f"CSV conversion failed: {e}")
 
     try:
         append_timing_summary(log_path, timings)

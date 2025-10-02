@@ -59,7 +59,7 @@ class Target:
         cmd = ['pfexec', 'humility', '-t', self.target, 'vpd',
                '--device', 'Cosmo VPD', '--read']
         vpd = output_on_err(cmd, encoding='utf-8').stdout
-        serial = re.search('BRM\w+', vpd)
+        serial = re.search(r'BRM\w+', vpd)
         if serial is not None:
             return serial.group()
         logging.error(
@@ -326,7 +326,8 @@ class Runner:
         logging.info('Results @ %s:%s', self.serial, results)
         self.copy_from_target(results, '.')
 
-        print("DRAM Margining Test Results:", pathlib.Path(results).name)
+        # Output full path for reliable parsing by dmar.py
+        print("DRAM Margining Test Results:", results)
 
         print("Elapsed from power on: ", datetime.now() - self.power_on_time)
 
@@ -391,7 +392,7 @@ class Runner:
                 print(f"Booted to x86 ({elapsed} elapsed)")
                 print("Waiting for phase 2 request...")
             elif line.startswith("NOTICE: MAC address is"):
-                mac = re.search('(([0-9a-fA-F]){2}:){5}([0-9a-fA-F]){2}', line)
+                mac = re.search(r'(([0-9a-fA-F]){2}:){5}([0-9a-fA-F]){2}', line)
                 if mac is None:
                     raise RuntimeError(
                         f"Failed to parse MAC from console: {line}")
