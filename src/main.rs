@@ -121,6 +121,8 @@ fn main() -> anyhow::Result<()> {
         struct Chan<'a> {
             chan: u8,
             slot: char,
+            clock: u32,
+            speed: u32,
             dimms: BTreeMap<u8, Dimm<'a>>,
         }
         #[derive(serde::Serialize)]
@@ -142,13 +144,15 @@ fn main() -> anyhow::Result<()> {
             .map(|c| Chan {
                 chan: c.chan,
                 slot: c.slot,
+                clock: c.clock,
+                speed: c.speed,
                 dimms: c.dimms.iter().map(|d| (d.dimm, Dimm {
                     ranks: d.ranks.iter().map(|r| (r.rank, Rank {
                         sub_chans: r.sub_chans.iter().map(|s| SubChannel {
                             data_eyes: &s.data_eyes
                         }).collect()
                     })).collect()
-                })).collect()
+                })).collect(),
             }).collect::<Vec<_>>();
 
         let mut margins_json = fs::File::create_new(out_path.join("margins.json"))
