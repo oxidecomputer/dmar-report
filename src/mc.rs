@@ -16,6 +16,8 @@ const TURIN_CHAN_MAP: [char; 12] = ['C', 'E', 'F', 'A', 'B', 'D', 'I', 'K', 'L',
 pub struct Channel {
     pub chan: u8,
     pub slot: char,
+    pub clock: u32,
+    pub speed: u32,
     pub dimms: Vec<Dimm>,
     phy: Option<ChannelPhyData>,
     vrefdac_pair: VrefDacPair,
@@ -354,6 +356,7 @@ fn parse_spd(spd: &[u8]) -> anyhow::Result<(DimmInfo, Vec<u8>)> {
 /// A handle to a `zen_umc` device on the system.
 pub struct ZenUmc {
     umc_dev: File,
+    usmn_dev: File,
 }
 
 impl ZenUmc {
@@ -361,12 +364,16 @@ impl ZenUmc {
 
     pub fn open(soc: u8) -> anyhow::Result<Self> {
         let umc_dev_path = Self::zen_dev_path("zen_umc", &format!("mc-umc-{soc}"))
-            .with_context(|| format!("Failed to get zen umc dev path"))?;
+            .with_context(|| format!("Failed to get zen_umc dev path"))?;
         let umc_dev = File::open(&umc_dev_path).with_context(|| {
             format!("Failed to open zen_umc device @ {}", umc_dev_path.display())
         })?;
+        let usmn_dev_path = Self::zen_dev_path("usmn", &format!("usmn.{soc}"))
+            .with_context(|| format!("Failed to get usmn dev path"))?;
+        let usmn_dev = File::open(&usmn_dev_path)
+            .with_context(|| format!("Failed to open usmn device @ {}", usmn_dev_path.display()))?;
 
-        Ok(ZenUmc { umc_dev })
+        Ok(ZenUmc { umc_dev, usmn_dev })
     }
 
     fn raw_get_data(&self, data: &mut sys::mc_get_data) -> std::io::Result<()> {
@@ -787,6 +794,33 @@ impl ZenUmc {
         Ok(())
     }
 
+    /// Returns the trained clock (MHz) and speed (MT/s).
+    fn get_chan_clock_speed(&self, chan: u32) -> anyhow::Result<(u32, u32)> {
+        assert!(chan < sys::MC_ZEN_MAX_CHANS as u32);
+
+        // XXX: We just go ahead and read the SMN register UMC::DramConfiguration directly but in
+        // the limit we should be able to get it from topo or the zen_umc driver itself.
+        pub const UMC_APERTURE_BASE: u32 = 0x50000;
+        pub const UMC_DRAM_CFG_REG: u32 = 0x200; // We only grab the register for Memory P-state 0
+        let mut usr = sys::usmn_reg_t {
+            usr_addr: UMC_APERTURE_BASE + (chan << 20) + UMC_DRAM_CFG_REG,
+            usr_data: 0,
+            usr_size: 4,
+        };
+
+        if unsafe { libc::ioctl(self.usmn_dev.as_raw_fd(), sys::USMN_READ, &raw mut usr) } != 0 {
+            return Err(Error::last_os_error())
+                .with_context(|| format!("Failed to get read UMCCH{chan}::DramConfiguration"));
+        }
+
+        // XXX: This is only valid for DDR5 (& NOT LPDDR5)!
+        // 16:0 - MemClkFreq
+        let clock = (usr.usr_data as u16) as u32;
+        let speed = clock * 2;
+
+        Ok((clock, speed))
+    }
+
     /// Attempts to discover the DIMMs present on the memory controller,
     /// grabbing the SPD, PHY data and margin data (if present).
     pub fn discover(&self) -> anyhow::Result<Vec<Channel>> {
@@ -796,10 +830,22 @@ impl ZenUmc {
             let mut chan = Channel {
                 chan: c,
                 slot: TURIN_CHAN_MAP[c as usize], // XXX
+                clock: 0,
+                speed: 0,
                 dimms: vec![],
                 phy: None,
                 vrefdac_pair: VrefDacPair::VrefDac01,
             };
+
+            match self.get_chan_clock_speed(c as u32) {
+                Ok((clock, speed)) => {
+                    chan.clock = clock;
+                    chan.speed = speed;
+                }
+                // This shouldn't fail but don't bail if for some reason we
+                // couldn't grab the clock/speed.
+                Err(e) => eprintln!("{e}"),
+            }
 
             match self.get_phy_data(DataScope::Chan(c)) {
                 Ok(pdata) => {

@@ -345,3 +345,14 @@ unsafe extern "C" {
         _: libc::size_t,
     ) -> libc::ssize_t;
 }
+
+const USMN_IOCTL: Ioctl = (('u' as Ioctl) << 24) | (('s' as Ioctl) << 16) | (('m' as Ioctl) << 8);
+pub const USMN_READ: Ioctl = USMN_IOCTL | 0x01;
+
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct usmn_reg_t {
+    pub usr_addr: u32,
+    pub usr_data: u32,
+    pub usr_size: u32,
+}
