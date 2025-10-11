@@ -364,12 +364,12 @@ impl ZenUmc {
 
     pub fn open(soc: u8) -> anyhow::Result<Self> {
         let umc_dev_path = Self::zen_dev_path("zen_umc", &format!("mc-umc-{soc}"))
-            .with_context(|| format!("Failed to get zen_umc dev path"))?;
+            .context("Failed to get zen_umc dev path")?;
         let umc_dev = File::open(&umc_dev_path).with_context(|| {
             format!("Failed to open zen_umc device @ {}", umc_dev_path.display())
         })?;
         let usmn_dev_path = Self::zen_dev_path("usmn", &format!("usmn.{soc}"))
-            .with_context(|| format!("Failed to get usmn dev path"))?;
+            .context("Failed to get usmn dev path")?;
         let usmn_dev = File::open(&usmn_dev_path)
             .with_context(|| format!("Failed to open usmn device @ {}", usmn_dev_path.display()))?;
 
@@ -450,7 +450,7 @@ impl ZenUmc {
                     "unexpected error getting {descr} for {scope}"
                 );
 
-                return Ok(data_arr);
+                Ok(data_arr)
             }
 
             sys::mc_get_data_error::MGD_CHAN_EMPTY => anyhow::bail!(ChanEmpty),
@@ -594,13 +594,11 @@ impl ZenUmc {
         let vref_dac0_data = vref_dac0
             .0
             .chunks_exact(sys::ZEN_UMC_VREF_DAC_CTLS)
-            .map(|c| c.into_iter().copied().take(sys::ZEN_UMC_VREF_DAC_CTLS - 1))
-            .flatten();
+            .flat_map(|c| c.iter().copied().take(sys::ZEN_UMC_VREF_DAC_CTLS - 1));
         let vref_dac1_data = vref_dac1
             .0
             .chunks_exact(sys::ZEN_UMC_VREF_DAC_CTLS)
-            .map(|c| c.into_iter().copied().take(sys::ZEN_UMC_VREF_DAC_CTLS - 1))
-            .flatten();
+            .flat_map(|c| c.iter().copied().take(sys::ZEN_UMC_VREF_DAC_CTLS - 1));
         let read_vrefs = vref_dac0_data
             .zip(vref_dac1_data)
             .chain(vref_dac0.1.iter().copied().zip(vref_dac1.1.iter().copied()))
@@ -656,7 +654,7 @@ impl ZenUmc {
         // DRAM Mode Register 10 contains the DRAM side VrefDQ values.
         let write_vrefs = mrs
             .get_regs(10)
-            .into_iter()
+            .iter()
             .copied()
             .zip(skip_dies)
             .filter_map(|(vref, skip)| if skip { None } else { Some(vref) });

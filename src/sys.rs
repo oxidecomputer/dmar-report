@@ -131,7 +131,6 @@ pub struct mc_zen_margin_t {
 
 #[derive(Debug, serde::Serialize)]
 #[repr(C)]
-
 pub struct mc_dram_mode_regs_t {
     pub mdmr_nregs: u8,
     pub mdmr_ndies: u8,
