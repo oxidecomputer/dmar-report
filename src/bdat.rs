@@ -67,7 +67,7 @@ impl Kvm {
                     .ok()
                     .unwrap()
             })
-            .unwrap_or(CString::default());
+            .unwrap_or_default();
         let hdl = unsafe {
             sys::kvm_open(
                 std::ptr::null(), // namelist = NULL => use running kernel
