@@ -837,6 +837,13 @@ def main():
     if tar_path is None or not tar_path.exists():
         clean_then_exit(2, f"{args.inventron}-sp", log_path, "Error: Results .tar not found. Check the log for the results line.")
 
+    # Rename tar file to match CSV naming pattern
+    import shutil
+    tar_dest = out_dir / out_csv.with_suffix('.tar').name
+    if tar_path != tar_dest:
+        shutil.copy2(tar_path, tar_dest)
+        tar_path = tar_dest
+
     if out_csv.exists() and not args.force:
         # Resolve naming conflict by appending timestamp
         stem = out_csv.stem
