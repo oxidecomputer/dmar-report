@@ -42,6 +42,30 @@ fn cmd(prog: &str, args: &[&str]) -> anyhow::Result<String> {
 fn main() -> anyhow::Result<()> {
     use std::fs;
 
+    // Handle command-line args
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() > 1 {
+        match args[1].as_str() {
+            "-v" | "--version" => {
+                println!("dmar-report {}", env!("CARGO_PKG_VERSION"));
+                return Ok(());
+            }
+            "-h" | "--help" => {
+                println!("dmar-report - Collect DRAM memory and margin reports");
+                println!("\nUsage: dmar-report [OPTIONS]");
+                println!("\nOptions:");
+                println!("  -h, --help       Show this help message");
+                println!("  -v, --version    Show version information");
+                return Ok(());
+            }
+            _ => {
+                eprintln!("Unknown option: {}", args[1]);
+                eprintln!("Use -h or --help for usage information");
+                std::process::exit(1);
+            }
+        }
+    }
+
     let umc = mc::ZenUmc::open(0).context("Failed to get ZenUmc handle")?;
     let chans = umc.discover()?;
 
