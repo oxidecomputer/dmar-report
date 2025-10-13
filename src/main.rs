@@ -121,8 +121,8 @@ fn main() -> anyhow::Result<()> {
         struct Chan<'a> {
             chan: u8,
             slot: char,
-            clock: u32,
-            speed: u32,
+            clock: Option<u32>,
+            speed: Option<u32>,
             dimms: BTreeMap<u8, Dimm<'a>>,
         }
         #[derive(serde::Serialize)]

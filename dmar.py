@@ -746,7 +746,7 @@ def main():
         print(f"  eye_width_write_limit:  {cfg.get('eye_width_write_limit')}")
         print(f"  expected_dimms:         {cfg.get('expected_dimms')}")
         print(f"  expected_slots:         {cfg.get('expected_slots')}")
-        print(f"Config source: {meta.get('config_source')}")
+        print(f"\nConfig file:   {meta.get('config_source') or '(none - using defaults)'}")
         print(f"Profile used:  {meta.get('profile_used')}")
         # extra context
         print(f"CWD:          {Path.cwd()}")
