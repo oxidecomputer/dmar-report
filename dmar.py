@@ -842,6 +842,11 @@ def main():
     tar_dest = out_dir / out_csv.with_suffix('.tar').name
     if tar_path != tar_dest:
         shutil.copy2(tar_path, tar_dest)
+        # Clean up the original tar file after copying
+        try:
+            tar_path.unlink()
+        except OSError as e:
+            print(f"Warning: failed to remove original tar file {tar_path}: {e}", file=sys.stderr)
         tar_path = tar_dest
 
     if out_csv.exists() and not args.force:
