@@ -1,2 +1,6 @@
 /target
 *pycache*
+*\.bak*
+*trash*
+*archive*
+
