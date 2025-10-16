@@ -364,6 +364,7 @@ def _write_csv_from_json(margins, dimms, output_path: Path, brd_sn: Optional[str
     ]
     if brd_sn:
         headers.append("Board SN")
+    headers.append("Speed")  # Add speed column before margin calculations
     headers += [
         "margin_read_width", "margin_read_height", "margin_write_width", "margin_write_height",
         "PASS",  # PASS is last column
@@ -379,6 +380,7 @@ def _write_csv_from_json(margins, dimms, output_path: Path, brd_sn: Optional[str
 
         for m in margins:
             soc_chan = m.get("chan")
+            speed = m.get("speed") or ""  # Extract speed from channel data, convert None to empty string
             pcb_info = dimm_info_map.get(soc_chan, {})
             pcb_chan = pcb_info.get("PCB_CH", "")
             dimm_mfg = pcb_info.get("DIMM_MFG", "")
@@ -448,6 +450,7 @@ def _write_csv_from_json(margins, dimms, output_path: Path, brd_sn: Optional[str
                             ]
                             if brd_sn:
                                 row.append(brd_sn)
+                            row.append(speed)  # Add speed value to the row
                             row.extend([m_rw_s, m_rh_s, m_ww_s, m_wh_s, "PASS" if pass_ok else "FAIL"])
                             w.writerow(row)
 
