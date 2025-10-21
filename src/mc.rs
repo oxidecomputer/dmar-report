@@ -792,7 +792,12 @@ impl ZenUmc {
                             self.margin_to_dataeye(chan, dimm, &rank, &sub_chan)
                                 .context("Failed to convert margin results to data eye")?;
                     }
-                    Err(e) if e.is::<NoData>() => {}
+                    Err(e) if e.is::<NoData>() => {
+                        eprintln!(
+                            "WARNING: Missing lane margins for {} (was MBIST enabled?)",
+                            DataScope::SubChannel(c, d, r, sc)
+                        );
+                    }
                     Err(err) => anyhow::bail!(err),
                 }
 
