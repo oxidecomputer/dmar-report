@@ -374,7 +374,11 @@ impl ZenUmc {
             Ok(usmn_dev_path) => match File::open(&usmn_dev_path) {
                 Ok(file) => Some(file),
                 Err(e) => {
-                    eprintln!("Warning: Failed to open usmn device @ {}: {}", usmn_dev_path.display(), e);
+                    eprintln!(
+                        "Warning: Failed to open usmn device @ {}: {}",
+                        usmn_dev_path.display(),
+                        e
+                    );
                     None
                 }
             },
@@ -812,7 +816,9 @@ impl ZenUmc {
     fn get_chan_clock_speed(&self, chan: u32) -> anyhow::Result<(u32, u32)> {
         assert!(chan < sys::MC_ZEN_MAX_CHANS as u32);
 
-        let usmn_dev = self.usmn_dev.as_ref()
+        let usmn_dev = self
+            .usmn_dev
+            .as_ref()
             .context("usmn device not available for reading clock/speed")?;
 
         // XXX: We just go ahead and read the SMN register UMC::DramConfiguration directly but in
