@@ -1,0 +1,34 @@
+# Base defaults (can be overridden per-profile below, by env, or by CLI)
+#image_dir  = "/staff/dock/racktest/os/20250924-1735"
+image_dir  = "/staff/dock/racktest/os/latest"
+#image_dir  = "/staff/dock/racktest/os/20250716-1417"
+#fw_path    = "/staff/tom/git/amd-firmware/BRH/1.0.0.5"
+fw_path    = "/staff/tom/git/amd-firmware/BRH/1.0.0.6"
+# Individual tool paths (full paths to binaries)
+bootserver_path = "/staff/tom/git/boot-image-tools/target/release/bootserver"
+dmar_report_path = "/staff/tom/git/dmar-report/target/release/dmar-report"
+image_builder_path = "/staff/tom/git/amd-host-image-builder/target/release/amd-host-image-builder"
+# dmar_runner_path defaults to dmar-runner.py next to dmar.py if omitted
+# default dmar.toml is assumed to be in the same directory as dmar_runner_path
+dmar_runner_path = "/staff/tom/git/dmar-report/dmar-runner.py"
+output_root = "."   # where CSV + log will be written by default
+
+# pass / fail criteria for eye characteristics
+eye_height_read_limit  = 0.066
+eye_height_write_limit = 0.071
+eye_width_read_limit   = 0.31
+eye_width_write_limit  = 0.31
+
+# expected dimm count in system
+expected_dimms = 12
+# optional: enumerate slots you expect (example)
+expected_slots = ["A","B","C","D","E","F","G","H","I","J","K","L"]
+
+[profiles.mb-3]
+image_dir  = "/staff/dock/racktest/os/latest"
+expected_dimms = 12
+
+[profiles.mb-0]
+image_dir  = "/staff/dock/racktest/os/latest"
+expected_dimms = 12
+
