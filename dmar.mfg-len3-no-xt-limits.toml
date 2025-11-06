@@ -3,7 +3,7 @@
 image_dir  = "/staff/dock/racktest/os/latest"
 #image_dir  = "/staff/dock/racktest/os/20250716-1417"
 #fw_path    = "/staff/tom/git/amd-firmware/BRH/1.0.0.5"
-fw_path    = "/staff/tom/git/amd-firmware/BRH/1.0.0.6"
+fw_path    = "/staff/tom/git/amd-firmware/BRH/1.0.0.7"
 # Individual tool paths (full paths to binaries)
 bootserver_path = "/staff/tom/git/boot-image-tools/target/release/bootserver"
 dmar_report_path = "/staff/tom/git/dmar-report/target/release/dmar-report"
