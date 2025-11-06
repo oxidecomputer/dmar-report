@@ -1,5 +1,5 @@
-turin-cosmo-1.0.0.6.mbist-mfg-v0-dext-len3.efs.json5 :  15min test, DataEye XT enabled
-tom@jeeves:/staff/tom/git/dmar-report $ grep Mbist turin-cosmo-1.0.0.6.mbist-mfg-v0-dext-len3.efs.json5
+turin-cosmo-1.0.0.7.mbist-mfg-v0-dext-len3.efs.json5 :  15min test, DataEye XT enabled
+tom@jeeves:/staff/tom/git/dmar-report $ grep Mbist turin-cosmo-1.0.0.7.mbist-mfg-v0-dext-len3.efs.json5
                         MemMbistAggressorStaticLaneControl: false
                         MemMbistTgtStaticLaneControl: false
                         MemMbistAggressorsChannelDdrMode: "SubChannel"
@@ -16,7 +16,6 @@ tom@jeeves:/staff/tom/git/dmar-report $ grep Mbist turin-cosmo-1.0.0.6.mbist-mfg
                         MemMbistDdrMode: "Disabled"
                         MemMbistDataEyeSilentExecutionDdr: "Enabled"
                         BdatSupport: "Enabled"    // 'Enabled' for Mbist
-                        BdatPrintData: "Enabled"  // 'Enabled' for Mbist
                         MemMbistDataEyeExecutionRepeatCount: 1
                         MemMbistTestModeDdr: "DataEye"
                         MemMbistTgtStaticLaneSelEcc: 0
@@ -30,9 +29,9 @@ tom@jeeves:/staff/tom/git/dmar-report $ grep Mbist turin-cosmo-1.0.0.6.mbist-mfg
                         MemMbistAggressorStaticLaneSelHi: 0
 
 
-turin-cosmo-1.0.0.6.mbist-mfg-v1-qxt-len3.efs.json5  :  20min
-tom@jeeves:/staff/tom/git/dmar-report $ diff <(grep Mbist turin-cosmo-1.0.0.6.mbist-mfg-v0-dext-len3.efs.json5 ) <(grep Mbist turin-cosmo-1.0.0.6.mbist-mfg-v1-qxt-len3.efs.json5 )
-19c19
+turin-cosmo-1.0.0.7.mbist-mfg-v1-qxt-len3.efs.json5  :  20min
+tom@jeeves:/staff/tom/git/dmar-report $ diff <(grep Mbist turin-cosmo-1.0.0.7.mbist-mfg-v0-dext-len3.efs.json5 ) <(grep Mbist turin-cosmo-1.0.0.7.mbist-mfg-v1-qxt-len3.efs.json5 )
+18c18
 <                         MemMbistTestModeDdr: "DataEye"
 ---
 >                         MemMbistTestModeDdr: "Auto"
@@ -45,8 +44,8 @@ tom@jeeves:/staff/tom/git/dmar-report $ diff <(grep Mbist turin-cosmo-1.0.0.6.mb
 
 
 
-turin-cosmo-1.0.0.6.mbist-mfg-v2-full-xt-len3.efs.json5  : 30min full xt len3
-tom@jeeves:/staff/tom/git/dmar-report $ diff <(grep Mbist turin-cosmo-1.0.0.6.mbist-mfg-v1-qxt-len3.efs.json5) <(grep Mbist turin-cosmo-1.0.0.6.mbist-mfg-v2-full-xt-len3.efs.json5 )
+turin-cosmo-1.0.0.7.mbist-mfg-v2-full-xt-len3.efs.json5  : 30min full xt len3
+tom@jeeves:/staff/tom/git/dmar-report $ diff <(grep Mbist turin-cosmo-1.0.0.7.mbist-mfg-v1-qxt-len3.efs.json5) <(grep Mbist turin-cosmo-1.0.0.7.mbist-mfg-v2-full-xt-len3.efs.json5 )
 3c3
 <                         MemMbistAggressorsChannelDdrMode: "SubChannel"
 ---
@@ -55,7 +54,7 @@ tom@jeeves:/staff/tom/git/dmar-report $ diff <(grep Mbist turin-cosmo-1.0.0.6.mb
 <                         MemMbistPatternSelectDdr: "Prbs"
 ---
 >                         MemMbistPatternSelectDdr: "Both"
-16,17c16,17
+18c18
 <                         MemMbistTestModeDdr: "Auto"
 ---
 >                         MemMbistTestModeDdr: "Both"
