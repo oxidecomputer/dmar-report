@@ -292,7 +292,10 @@ def main():
     brd_sn = None
 
     try:
-        csv_from_tar(tar_path, out_csv, brd_sn, limits)
+        dimm_list = csv_from_tar(tar_path, out_csv, brd_sn, limits)
+        slot_list = sorted(set([slot for (_, slot, _, _, _) in dimm_list]))
+        print(f"DIMM Count: {len(dimm_list)}")
+        print(f"Slots: {', '.join(slot_list)}")
     except Exception as e:
         print(f"conversion failed: {e}", file=sys.stderr)
         sys.exit(4)
