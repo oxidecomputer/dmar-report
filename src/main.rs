@@ -198,6 +198,16 @@ fn main() -> anyhow::Result<()> {
         .context("Failed to write decode snapshot")?;
     }
 
+    // 7. Also grab the APOB which includes the PMU error log.
+    {
+        let apob_out = out_path.join("APOB.bin");
+        cmd(
+            "/usr/lib/apobdump",
+            &["save-apob", "-f", apob_out.to_str().unwrap()],
+        )
+        .context("Failed to write APOB")?;
+    }
+
     // Finally `tar` everything up
     let datetime = cmd("/usr/bin/date", &["+%Y-%m-%dT-%H-%M-%S"])?;
     let archive = format!("/tmp/{hostname}-{datetime}.tar");
